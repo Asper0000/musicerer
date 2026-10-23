@@ -1,0 +1,159 @@
+use iced::theme::{Palette, Theme};
+use iced::widget::{button, container, text};
+use iced::{Background, Border, Color};
+
+pub fn app_theme() -> Theme {
+    Theme::custom(
+        "Musicerer Mono".to_string(),
+        Palette {
+            background: bg(),
+            text: text_primary(),
+            primary: primary(),
+            success: success(),
+            danger: danger(),
+        },
+    )
+}
+
+pub fn bg() -> Color { Color::from_rgb(0.043, 0.043, 0.043) }
+pub fn surface() -> Color { Color::from_rgb(0.078, 0.078, 0.078) }
+pub fn surface_elevated() -> Color { Color::from_rgb(0.118, 0.118, 0.118) }
+pub fn border_subtle() -> Color { Color::from_rgb(0.169, 0.169, 0.169) }
+pub fn border_strong() -> Color { Color::from_rgb(0.235, 0.235, 0.235) }
+pub fn text_primary() -> Color { Color::from_rgb(0.902, 0.902, 0.902) }
+pub fn text_secondary() -> Color { Color::from_rgb(0.627, 0.627, 0.627) }
+pub fn text_muted() -> Color { Color::from_rgb(0.420, 0.420, 0.420) }
+pub fn primary() -> Color { Color::from_rgb(0.800, 0.800, 0.800) }
+pub fn success() -> Color { Color::from_rgb(0.400, 0.780, 0.500) }
+pub fn danger() -> Color { Color::from_rgb(0.900, 0.450, 0.450) }
+pub fn warning() -> Color { Color::from_rgb(0.950, 0.700, 0.350) }
+
+fn border(color: Color, width: f32, radius: f32) -> Border {
+    Border { color, width, radius: radius.into() }
+}
+
+pub fn sidebar(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface())),
+        border: border(border_subtle(), 0.0, 0.0),
+        ..Default::default()
+    }
+}
+
+pub fn card(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface())),
+        border: border(border_subtle(), 1.0, 6.0),
+        ..Default::default()
+    }
+}
+
+pub fn card_elevated(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface_elevated())),
+        border: border(border_strong(), 1.0, 6.0),
+        ..Default::default()
+    }
+}
+
+pub fn thumbnail_placeholder(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface())),
+        border: border(border_subtle(), 1.0, 8.0),
+        ..Default::default()
+    }
+}
+
+pub fn warning_banner(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb(0.180, 0.130, 0.055))),
+        border: border(warning(), 1.0, 6.0),
+        ..Default::default()
+    }
+}
+
+pub fn status_bar(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface())),
+        border: border(border_subtle(), 0.0, 0.0),
+        ..Default::default()
+    }
+}
+
+pub fn muted_text(_: &Theme) -> text::Style {
+    text::Style { color: Some(text_secondary()) }
+}
+
+pub fn muted_text_strong(_: &Theme) -> text::Style {
+    text::Style { color: Some(text_muted()) }
+}
+
+pub fn primary_button(_: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(Background::Color(primary())),
+        text_color: bg(),
+        border: border(primary(), 0.0, 6.0),
+        ..Default::default()
+    };
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.900, 0.900, 0.900))),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.650, 0.650, 0.650))),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.180, 0.180, 0.180))),
+            text_color: text_muted(),
+            ..base
+        },
+        _ => base,
+    }
+}
+
+pub fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(Background::Color(surface_elevated())),
+        text_color: text_primary(),
+        border: border(border_strong(), 1.0, 6.0),
+        ..Default::default()
+    };
+    match status {
+        button::Status::Hovered => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.180, 0.180, 0.180))),
+            ..base
+        },
+        button::Status::Pressed => button::Style {
+            background: Some(Background::Color(Color::from_rgb(0.140, 0.140, 0.140))),
+            ..base
+        },
+        button::Status::Disabled => button::Style {
+            background: Some(Background::Color(surface())),
+            text_color: text_muted(),
+            ..base
+        },
+        _ => base,
+    }
+}
+
+pub fn nav_button(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let bg_color = if selected { surface_elevated() } else { Color::TRANSPARENT };
+        let base = button::Style {
+            background: Some(Background::Color(bg_color)),
+            text_color: if selected { text_primary() } else { text_secondary() },
+            border: if selected { border(border_strong(), 1.0, 6.0) } else { border(Color::TRANSPARENT, 0.0, 6.0) },
+            ..Default::default()
+        };
+        match status {
+            button::Status::Hovered if !selected => button::Style {
+                background: Some(Background::Color(Color::from_rgb(0.110, 0.110, 0.110))),
+                text_color: text_primary(),
+                ..base
+            },
+            _ => base,
+        }
+    }
+}

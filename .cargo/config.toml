@@ -1,0 +1,4 @@
+[build]
+# tiny-skia is a pure-CPU rasteriser; keep the build lean.
+[target.'cfg(windows)']
+rustflags = ["-C", "target-feature=+crt-static"]
