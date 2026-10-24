@@ -10,7 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.99.1%2B-orange?logo=rust&logoColor=white" alt="Rust"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Version-0.2-6f42c1" alt="Version 0.2"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust&logoColor=white" alt="Rust"></a>
   <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11%20%7C%20Linux-0078D6?logo=windows&logoColor=white" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License"></a>
 </p>
@@ -37,9 +38,9 @@
 
 Unlike traditional downloaders that rely on bulky web frameworks, Musicerer is built entirely in Rust using **Iced** and **tiny-skia**. It renders purely on the CPU, requires no GPU, and features a completely custom, borderless dark UI with native window resizing.
 
-- **Portable.** On Windows, `yt-dlp`, `ffmpeg`, and the fallback tool are compiled directly into the executable.
+- **Convenient to run.** On Windows, `ffmpeg` and `ffprobe` are embedded in the executable. `yt-dlp` and Deno remain external runtime dependencies; the optional SoundCloud fallback is only needed for DRM-protected SoundCloud tracks.
 - **Safe & clean.** Downloads run in isolated temporary directories and move to your output folder atomically.
-- **Reversible.** It does not modify system registries or leave permanent traces.
+- **Low-impact.** It keeps preferences in the current user’s config directory and does not modify system registries.
 
 > **Side Note:** The current Windows executable is quite large because it bundles a full, uncompressed build of FFmpeg. A future update will strip down unnecessary FFmpeg components to significantly reduce the final binary size.
 
@@ -47,58 +48,61 @@ Unlike traditional downloaders that rely on bulky web frameworks, Musicerer is b
 
 ## Features
 
-- 🎵 **Extensive Platform Support**: Paste URLs from a wide variety of supported media platforms and hit Add.
-- 📦 **Fully portable (Windows)**: Embeds `ffmpeg.exe`, `ffprobe.exe`, and the fallback tool directly into the binary.
+- 🎵 **Platform support**: Add individual tracks or playlists from YouTube and SoundCloud.
+- 📦 **Embedded Windows tools**: Bundles `ffmpeg.exe` and `ffprobe.exe` into the executable. `yt-dlp.exe` and Deno remain external requirements. `soundcloud.exe` is optional and is only used by the DRM fallback.
 - 🎨 **Custom UI**: Frameless window, dark monochrome theme with blue accents, and draggable/resizable edges.
-- 🖼️ **Perfect metadata**: Downloads and center-crops cover art to a 1:1 square, writing it to the file tags.
+- 🖼️ **Track metadata**: Embeds available title, artist, album, and center-cropped 1:1 cover art into the saved file.
 - 📊 **Queue management**: Real-time progress bars, track previews, and detailed log output.
+- 🧭 **Clearer YouTube failures**: unavailable videos are reported separately from real download errors, and HTTP 403 failures get one retry with an alternate player client.
+- 🎧 **SoundCloud playlist metadata**: each playlist track gets its own title and artwork instead of inheriting the creator's avatar or playlist metadata.
 - 💾 **Persistent settings**: Saves your output directory and cookies path automatically in your OS config directory.
-- 💽 **Storage monitor**: Displays live free/total disk space for your output drive.
+- 💽 **Storage monitor**: Shows available and total disk space for the output drive.
 
 ---
 
 ## How it works
 
-Musicerer abstracts away the complexity of command-line media extraction. 
+Musicerer abstracts away the complexity of command-line media extraction.
 
-1. When you add a URL, it queries the platform's public API (or `yt-dlp`) to fetch the title and thumbnail immediately.
-2. The queue is processed sequentially. For each track, a temporary directory is created.
-3. `yt-dlp` extracts the best audio stream and saves it as `.m4a`. 
-4. A custom Rust module crops the cover art into a square, and `audiotags` injects the metadata.
-5. The file is moved to your chosen output folder, and the temp directory is cleaned up.
+1. When a URL is added, `yt-dlp` fetches track metadata and artwork. SoundCloud playlists are expanded first; tracks with incomplete playlist metadata are then resolved individually.
+2. Downloads run concurrently in isolated temporary directories, with up to six workers. When a server rate-limits requests, the scheduler reduces concurrency and retries within a bounded limit.
+3. `yt-dlp` extracts audio and converts it to `.m4a` with FFmpeg.
+4. Rust code crops available cover art to a square, and `audiotags` writes the available title, artist, album, and artwork metadata.
+5. Completed audio is moved into the chosen output folder. Temporary download data is cleaned up automatically.
 
 ---
 
 ## What doesn't work: Go+
 
-**SoundCloud Go+ tracks** are heavily restricted. While `yt-dlp` can download Go+ tracks, it often grabs a ~30-second preview clip because the session isn't entitled to the full stream. Musicerer actively detects these short previews and fails the download intentionally to prevent you from saving incomplete audio. **Musicerer does not bypass Go+ protection.**
+**SoundCloud Go+ tracks** may return a short preview instead of the full stream when the current session is not entitled to the complete track. When `ffprobe` is available and the extracted SoundCloud audio is shorter than 45 seconds, Musicerer marks the download as failed rather than silently saving a likely preview. This duration check is a heuristic; a genuinely short track can also trigger it.
 
-*(Note: For standard tracks and DRM-protected tracks, Musicerer bypasses DRM protection automatically using its integrated fallback tool, allowing seamless downloading of otherwise locked tracks.)*
+For SoundCloud items that `yt-dlp` reports as protected, Musicerer can try the configured fallback tool. This is best-effort and does not guarantee access to restricted content. YouTube DRM-protected content is skipped.
 
 ---
 
 ## Building from source
 
-**Note:** No build scripts are shipped by default. To build Musicerer, you must have the Rust toolchain and the required external tools installed.
+To build Musicerer, install the Rust toolchain and the runtime tools required by your target platform.
 
 ### Prerequisites
 
-- **Rust** 1.99.1 or newer
-- **yt-dlp** on your system `PATH`
-- **deno** (Required for certain JavaScript challenges)
+- **Rust** 1.95 or newer (required by the atomic `try_update` API used by the scheduler; Iced 0.14 itself requires 1.88)
+- **yt-dlp** available on `PATH`
+- **Deno**, required for some YouTube JavaScript challenges
 
 ### Setup (Windows)
 
-To embed the tools into the `.exe`, place the following files in a `tools/` folder at the root of the project before compiling:
-- `soundcloud.exe` (or your specific fallback binary name)
+To embed FFmpeg tools into the Windows `.exe`, place these files in a `tools/` folder at the project root before compiling:
 - `ffmpeg.exe`
 - `ffprobe.exe`
+
+For `run.bat`, also place `yt-dlp.exe` in `tools/`; when building manually, `yt-dlp` must be available on `PATH`. `soundcloud.exe` is optional and is not embedded: place it in `tools/` beside the executable (or on `PATH`) only if you want to enable the best-effort fallback for DRM-protected SoundCloud tracks. The application builds and ordinary downloads work without it.
 
 ### Setup (Linux)
 
 > **⚠️ Warning:** The Linux build has not been tested at all. While the codebase includes Linux-specific configurations (such as skipping embedded binaries and providing an AppImage build script), it has not been verified on a real Linux machine. Proceed at your own risk.
 
-On Linux, the embedded tools are skipped. You must install them via your package manager:
+On Linux, Windows binaries are not embedded. Install `yt-dlp`, `ffprobe`, and (for non-AppImage runs) `ffmpeg` through your package manager. The AppImage helper bundles `ffmpeg`; `yt-dlp` and `ffprobe` must still be available on `PATH` at runtime. The optional SoundCloud fallback requires a compatible `soundcloud` executable if you want that fallback on Linux.
 ~~~bash
 sudo apt update
 sudo apt install build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev ffmpeg yt-dlp
@@ -130,9 +134,9 @@ These settings are saved automatically to your OS config directory (e.g., `%APPD
 
 ### Architecture
 - **UI:** Built with `iced` 0.14 using the `tiny-skia` backend for pure CPU rendering. The UI uses a custom `stack!` layout to overlay invisible `MouseArea` handles on the edges of the window for native-feeling resizing.
-- **Asynchronous Backend:** Downloads and previews run in separate threads. They communicate back to the UI via an `Arc<Mutex<Vec<WorkerEvent>>>` inbox, polled by an Iced subscription every 120ms.
+- **Concurrent backend:** Downloads, playlist expansion, thumbnails, and previews run on bounded worker threads. Workers communicate with the UI through an `Arc<Mutex<Vec<WorkerEvent>>>` inbox, polled by an Iced subscription every 120 ms.
 - **Subprocess Management:** External tools (`yt-dlp`, `ffmpeg`, etc.) are spawned using `std::process::Command`. On Windows, `CREATE_NO_WINDOW` flags are applied to prevent console windows from flashing.
-- **Fallback Extraction:** If DRM is detected, a custom Rust module invokes the fallback binary, searches the temp directory for the resulting audio file, and transcodes it using the embedded `ffmpeg` with `-vn` flags to prevent AAC mapping errors.
+- **Fallback Extraction:** If a SoundCloud track is DRM-protected and the optional `soundcloud.exe` is present, a custom Rust module invokes it, searches the temp directory for the resulting audio file, and transcodes it using FFmpeg with `-vn` flags to prevent AAC mapping errors. Without that optional binary, the DRM fallback is skipped with a clear log message; regular downloads remain unaffected.
 
 ### Window API
 Musicerer utilizes `iced::window::latest()` to get the current window ID, allowing it to call `iced::window::drag_resize()` and `iced::window::drag()` for custom topbar interactions.

@@ -1,20 +1,27 @@
 use super::{log, LogLevel, Source, TrackResult, WorkerEvent};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+const OEMBED_TIMEOUT: Duration = Duration::from_secs(5);
+const THUMBNAIL_TIMEOUT: Duration = Duration::from_secs(8);
+const MAX_OEMBED_THUMBNAIL_BYTES: u64 = 4 * 1024 * 1024;
+const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 #[cfg(target_os = "windows")]
 use std::sync::OnceLock;
 
-#[cfg(target_os = "windows")]
-const SOUNDCLOUD_BIN: &[u8] = include_bytes!("../../tools/soundcloud.exe");
+// FFmpeg and ffprobe are bundled with Windows builds. The SoundCloud fallback is
+// intentionally external/optional: normal downloads must not require its binary.
 #[cfg(target_os = "windows")]
 const FFMPEG_BIN: &[u8] = include_bytes!("../../tools/ffmpeg.exe");
 #[cfg(target_os = "windows")]
 const FFPROBE_BIN: &[u8] = include_bytes!("../../tools/ffprobe.exe");
 
 #[cfg(target_os = "windows")]
-static EMBEDDED: OnceLock<(Option<PathBuf>, Option<PathBuf>, Option<PathBuf>)> = OnceLock::new();
+static EMBEDDED: OnceLock<(Option<PathBuf>, Option<PathBuf>)> = OnceLock::new();
 
 #[cfg(target_os = "windows")]
 fn ensure_file(path: &Path, bytes: &[u8]) {
@@ -25,22 +32,19 @@ fn ensure_file(path: &Path, bytes: &[u8]) {
 }
 
 #[cfg(target_os = "windows")]
-fn get_embedded() -> &'static (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
+fn get_embedded() -> &'static (Option<PathBuf>, Option<PathBuf>) {
     EMBEDDED.get_or_init(|| {
         let mut dir = std::env::temp_dir();
         dir.push("musicerer_embedded_tools");
         let _ = std::fs::create_dir_all(&dir);
 
-        let sc_path = dir.join("soundcloud.exe");
         let ff_path = dir.join("ffmpeg.exe");
         let fp_path = dir.join("ffprobe.exe");
 
-        ensure_file(&sc_path, SOUNDCLOUD_BIN);
         ensure_file(&ff_path, FFMPEG_BIN);
         ensure_file(&fp_path, FFPROBE_BIN);
 
         (
-            if sc_path.exists() { Some(sc_path) } else { None },
             if ff_path.exists() { Some(ff_path) } else { None },
             if fp_path.exists() { Some(fp_path) } else { None },
         )
@@ -71,9 +75,8 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        let (sc, ff, fp) = get_embedded();
+        let (ff, fp) = get_embedded();
         let embedded = match exe_name.as_str() {
-            "soundcloud.exe" => sc.clone(),
             "ffmpeg.exe" => ff.clone(),
             "ffprobe.exe" => fp.clone(),
             _ => None,
@@ -93,23 +96,58 @@ pub fn find_tool(name: &str) -> Option<PathBuf> {
     None
 }
 
-pub fn fetch_oembed(url: &str) -> Result<(String, Option<PathBuf>), String> {
-    let oembed_url = format!("https://soundcloud.com/oembed?format=json&url={}", url);
-    let res = ureq::get(&oembed_url).call().map_err(|e| e.to_string())?;
+fn fetch_oembed_metadata(url: &str) -> Result<(String, Option<String>), String> {
+    // Build query parameters separately so playlist URLs that already contain a
+    // query string are encoded correctly rather than truncating the oEmbed URL.
+    let agent = ureq::AgentBuilder::new().timeout(OEMBED_TIMEOUT).build();
+    let res = agent
+        .get("https://soundcloud.com/oembed")
+        .set("User-Agent", USER_AGENT)
+        .set("Accept", "application/json,text/plain,*/*")
+        .query("format", "json")
+        .query("url", url)
+        .call()
+        .map_err(|e| e.to_string())?;
     let json: serde_json::Value = res.into_json().map_err(|e| e.to_string())?;
-    let title = json.get("title").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-    let thumb_url = json.get("thumbnail_url").and_then(|v| v.as_str());
+    let title = json.get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Unknown")
+        .to_string();
+    let thumb_url = json.get("thumbnail_url")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok((title, thumb_url))
+}
 
-    let thumb_path = if let Some(t_url) = thumb_url {
-        let temp_dir = std::env::temp_dir();
-        let p = temp_dir.join(format!("sc_thumb_{}.jpg", std::process::id()));
-        let mut file = std::fs::File::create(&p).map_err(|e| e.to_string())?;
-        let res = ureq::get(t_url).call().map_err(|e| e.to_string())?;
-        std::io::copy(&mut res.into_reader(), &mut file).map_err(|e| e.to_string())?;
-        Some(p)
-    } else { None };
+/// Fetches a SoundCloud title and optional cover bytes without creating temporary files.
+/// Thumbnail failures do not discard a title that was retrieved successfully.
+pub fn fetch_oembed(url: &str) -> Result<(String, Option<Vec<u8>>), String> {
+    let (title, thumb_url) = fetch_oembed_metadata(url)?;
+    let thumbnail = thumb_url.and_then(|url| fetch_thumbnail_bytes(&url).ok());
+    Ok((title, thumbnail))
+}
 
-    Ok((title, thumb_path))
+fn fetch_thumbnail_bytes(url: &str) -> Result<Vec<u8>, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(THUMBNAIL_TIMEOUT)
+        .build();
+    let response = agent
+        .get(url)
+        .set("User-Agent", USER_AGENT)
+        .set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+        .call()
+        .map_err(|e| e.to_string())?;
+
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    response
+        .into_reader()
+        .take(MAX_OEMBED_THUMBNAIL_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_OEMBED_THUMBNAIL_BYTES {
+        return Err("SoundCloud thumbnail exceeds the 4 MiB limit".to_string());
+    }
+    Ok(bytes)
 }
 
 pub fn handle_drm(
@@ -135,7 +173,10 @@ fn try_fallback(
     temp_dir: &Path,
     inbox: &Arc<Mutex<Vec<WorkerEvent>>>,
 ) -> Result<PathBuf, String> {
-    let tool = find_tool("soundcloud.exe").ok_or_else(|| "soundcloud.exe not found".to_string())?;
+    let tool = find_tool("soundcloud.exe").ok_or_else(|| {
+        "optional soundcloud.exe fallback not found; only DRM-protected SoundCloud tracks need this tool"
+            .to_string()
+    })?;
     let ffmpeg = find_tool("ffmpeg.exe").ok_or_else(|| "ffmpeg.exe not found".to_string())?;
 
     log(inbox, LogLevel::Info, format!("Running fallback tool: {:?}", tool));

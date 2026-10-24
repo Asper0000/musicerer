@@ -6,9 +6,15 @@ mod theme;
 mod ui;
 
 use app::App;
+use std::path::PathBuf;
 
 fn main() -> iced::Result {
-    let icon = iced::window::icon::from_file("assets/icon.ico").ok();
+    let icon_path = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("assets").join("icon.ico")))
+        .filter(|path| path.is_file())
+        .unwrap_or_else(|| PathBuf::from("assets/icon.ico"));
+    let icon = iced::window::icon::from_file(icon_path).ok();
 
     iced::application(App::new, App::update, App::view)
         .title("Musicerer")

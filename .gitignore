@@ -5,6 +5,10 @@
 .DS_Store
 Thumbs.db
 /tools
-patch.bat
-run.bat
-build_appimage.sh
+
+# Generated Linux packaging artifacts
+/AppDir/
+/*.AppImage
+/appimagetool
+/ffmpeg
+/ffmpeg-release-amd64-static.tar.xz

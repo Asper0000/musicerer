@@ -1,3 +1,4 @@
+mod events;
 mod helpers;
 mod update;
 mod view;
@@ -6,7 +7,7 @@ pub use helpers::guess_name_from_url;
 
 use crate::backend::vpn::{self, VpnInfo};
 use crate::theme;
-use crate::ui::{LogLine, QueueItem, View};
+use crate::ui::{ItemStatus, LogLine, QueueItem, View};
 
 use iced::{Subscription, Task, Theme};
 use std::collections::VecDeque;
@@ -37,6 +38,7 @@ pub enum Message {
     UrlChanged(String),
     AddUrl,
     RemoveTrack(u64),
+    ToggleGroup(u64),
     ClearQueue,
     OutputDirChanged(String),
     BrowseOutputDir,
@@ -69,7 +71,6 @@ pub struct App {
     pub(crate) logs: VecDeque<LogLine>,
     pub(crate) next_id: u64,
     pub(crate) downloading: bool,
-    pub(crate) current_progress: f32,
     pub(crate) status: String,
     pub(crate) show_log: bool,
     pub(crate) show_platforms: bool,
@@ -104,7 +105,6 @@ impl App {
             logs: VecDeque::new(),
             next_id: 1,
             downloading: false,
-            current_progress: 0.0,
             status: "Ready".to_string(),
             show_log: false,
             show_platforms: false,
@@ -124,6 +124,28 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         iced::time::every(Duration::from_millis(120)).map(|_| Message::PollWorker)
+    }
+
+    /// Every downloadable track in the queue: playlist children included.
+    pub(crate) fn tracks(&self) -> impl Iterator<Item = &QueueItem> {
+        self.queue.iter().flat_map(|item| item.tracks())
+    }
+
+    pub(crate) fn find_item_mut(&mut self, id: u64) -> Option<&mut QueueItem> {
+        self.queue.iter_mut().find_map(|item| item.find_mut(id))
+    }
+
+    /// Average completion across all tracks; finished tracks count as 100% whatever the outcome.
+    pub(crate) fn overall_progress(&self) -> f32 {
+        if !self.downloading { return 0.0; }
+        let (sum, count) = self.tracks().fold((0.0f32, 0usize), |(sum, count), t| {
+            let p = match t.status {
+                ItemStatus::Done | ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped | ItemStatus::Stopped => 1.0,
+                _ => t.progress,
+            };
+            (sum + p, count + 1)
+        });
+        if count == 0 { 0.0 } else { sum / count as f32 }
     }
 
     pub(crate) fn cookies_path(&self) -> Option<PathBuf> {

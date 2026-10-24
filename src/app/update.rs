@@ -1,9 +1,10 @@
+use super::helpers::READING_PLAYLIST;
 use super::{guess_name_from_url, App, Message};
 use crate::backend::{
-    detect_source, normalize_url, spawn_preview, spawn_worker, LogLevel, Source, TrackResult,
-    WorkerEvent,
+    detect_source, is_playlist_url, normalize_url, spawn_preview, spawn_resolve, spawn_worker,
+    Source,
 };
-use crate::ui::{ItemStatus, QueueItem, ThumbState, UiLogLevel, View};
+use crate::ui::{ItemStatus, QueueItem, UiLogLevel, View};
 
 use iced::Task;
 use std::path::PathBuf;
@@ -56,22 +57,43 @@ impl App {
                 }
                 let id = self.next_id;
                 self.next_id += 1;
-                let display_name = guess_name_from_url(&url, source);
-                let preview_url = url.clone();
-                self.queue.push(QueueItem {
-                    id,
-                    url,
-                    source,
-                    status: ItemStatus::Pending,
-                    progress: 0.0,
-                    display_name,
-                    thumbnail: ThumbState::Loading,
-                });
-                spawn_preview(id, preview_url, self.cookies_path(), self.inbox.clone());
+                let is_playlist = is_playlist_url(&url, source);
+                let display_name = if is_playlist {
+                    READING_PLAYLIST.to_string()
+                } else {
+                    guess_name_from_url(&url, source)
+                };
+                let mut item = QueueItem::new(id, url.clone(), source, display_name);
+                if is_playlist {
+                    item.resolving = true;
+                    spawn_resolve(id, url, self.cookies_path(), self.inbox.clone());
+                } else {
+                    spawn_preview(id, url, self.cookies_path(), self.inbox.clone());
+                }
+                self.queue.push(item);
                 self.url_input.clear();
             }
             Message::RemoveTrack(id) => {
-                if !self.downloading { self.queue.retain(|i| i.id != id); }
+                if !self.downloading {
+                    // Removing a playlist's main row removes the whole playlist.
+                    self.queue.retain(|i| i.id != id);
+                    for item in &mut self.queue {
+                        if let Some(group) = &mut item.group {
+                            group.children.retain(|c| c.id != id);
+                            if group.children.is_empty() { item.group = None; }
+                        }
+                    }
+                }
+            }
+            Message::ToggleGroup(id) => {
+                if let Some(group) = self
+                    .queue
+                    .iter_mut()
+                    .find(|i| i.id == id)
+                    .and_then(|i| i.group.as_mut())
+                {
+                    group.expanded = !group.expanded;
+                }
             }
             Message::ClearQueue => {
                 if !self.downloading { self.queue.clear(); }
@@ -142,21 +164,25 @@ impl App {
                     }
                     Some(p)
                 };
+                if self.queue.iter().any(|i| i.resolving) {
+                    self.push_log(UiLogLevel::Warn, "Wait for playlists to finish loading first.");
+                    return Task::none();
+                }
                 let items = self
-                    .queue
-                    .iter()
-                    .map(|i| (i.id, i.url.clone()))
+                    .tracks()
+                    .map(|t| (t.id, t.url.clone()))
                     .collect::<Vec<_>>();
-                for i in &mut self.queue {
-                    i.status = ItemStatus::Pending;
-                    i.progress = 0.0;
+                for item in &mut self.queue {
+                    item.for_each_track_mut(|t| {
+                        t.status = ItemStatus::Pending;
+                        t.progress = 0.0;
+                    });
                 }
                 self.downloading = true;
-                self.current_progress = 0.0;
                 self.stop_flag.store(false, Ordering::SeqCst);
                 self.logs.clear();
                 self.push_log(UiLogLevel::Info, "Queue started.");
-                self.status = "Startingâ€¦".to_string();
+                self.status = "Starting\u{2026}".to_string();
                 spawn_worker(
                     items,
                     output_dir,
@@ -168,7 +194,7 @@ impl App {
             Message::StopQueue => {
                 if self.downloading {
                     self.stop_flag.store(true, Ordering::SeqCst);
-                    self.status = "Stopping after current trackâ€¦".to_string();
+                    self.status = "Stopping\u{2026}".to_string();
                     self.push_log(UiLogLevel::Warn, "Stop requested.");
                 }
             }
@@ -183,83 +209,7 @@ impl App {
         Task::none()
     }
 
-    fn handle_worker_event(&mut self, event: WorkerEvent) {
-        match event {
-            WorkerEvent::TrackStarted { index } => {
-                if let Some(i) = self.queue.get_mut(index) {
-                    i.status = ItemStatus::Downloading;
-                    i.progress = 0.0;
-                }
-                self.current_progress = 0.0;
-                self.status = format!("Downloading {}/{}â€¦", index + 1, self.queue.len());
-            }
-            WorkerEvent::TrackTitle { index, title } => {
-                if let Some(i) = self.queue.get_mut(index) { i.display_name = title; }
-            }
-            WorkerEvent::Progress { index, value } => {
-                if let Some(i) = self.queue.get_mut(index) { i.progress = value; }
-                self.current_progress = value;
-            }
-            WorkerEvent::Thumbnail { index, width, height, rgba } => {
-                if let Some(i) = self.queue.get_mut(index) {
-                    i.thumbnail = ThumbState::Ready(iced::widget::image::Handle::from_rgba(
-                        width, height, rgba,
-                    ));
-                }
-            }
-            WorkerEvent::Log { level, text } => {
-                let lvl = match level {
-                    LogLevel::Info => UiLogLevel::Info,
-                    LogLevel::Warn => UiLogLevel::Warn,
-                    LogLevel::Error => UiLogLevel::Error,
-                };
-                self.push_log(lvl, text);
-            }
-            WorkerEvent::TrackFinished { index, result } => {
-                if let Some(i) = self.queue.get_mut(index) {
-                    i.status = match result {
-                        TrackResult::Ok => { i.progress = 1.0; ItemStatus::Done }
-                        TrackResult::Drm => ItemStatus::DrmSkipped,
-                        TrackResult::Error => ItemStatus::Failed,
-                        TrackResult::Stopped => ItemStatus::Stopped,
-                    };
-                }
-            }
-            WorkerEvent::QueueFinished { succeeded, failed, drm, stopped } => {
-                self.downloading = false;
-                self.current_progress = 0.0;
-                self.status = if stopped {
-                    format!("Stopped â€” {succeeded} succeeded, {failed} failed, {drm} DRM-skipped")
-                } else {
-                    format!("Done â€” {succeeded} succeeded, {failed} failed, {drm} DRM-skipped")
-                };
-                self.push_log(UiLogLevel::Info, self.status.clone());
-                self.update_disk_space();
-            }
-            WorkerEvent::PreviewReady { id, title, thumb } => {
-                if let Some(i) = self.queue.iter_mut().find(|i| i.id == id) {
-                    i.display_name = title;
-                    i.thumbnail = match thumb {
-                        Some((w, h, rgba)) => ThumbState::Ready(
-                            iced::widget::image::Handle::from_rgba(w, h, rgba),
-                        ),
-                        None => ThumbState::Failed,
-                    };
-                }
-            }
-            WorkerEvent::PreviewFailed { id, error } => {
-                if let Some(i) = self.queue.iter_mut().find(|i| i.id == id) {
-                    i.thumbnail = ThumbState::Failed;
-                    if i.display_name == "Fetching titleâ€¦" {
-                        i.display_name = "Unknown video".to_string();
-                    }
-                }
-                self.push_log(UiLogLevel::Warn, format!("Preview failed: {error}"));
-            }
-        }
-    }
-
-    fn push_log(&mut self, level: UiLogLevel, text: impl Into<String>) {
+    pub(super) fn push_log(&mut self, level: UiLogLevel, text: impl Into<String>) {
         self.logs.push_back(crate::ui::LogLine { level, text: text.into() });
         while self.logs.len() > 400 { self.logs.pop_front(); }
     }

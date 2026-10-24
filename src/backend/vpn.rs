@@ -4,7 +4,6 @@ use sysinfo::System;
 pub struct VpnInfo {
     pub detected: bool,
     pub matches: Vec<String>,
-    pub interfaces_hint: Vec<String>,
 }
 
 impl VpnInfo {
@@ -94,6 +93,5 @@ pub fn detect() -> VpnInfo {
     VpnInfo {
         detected: !matches.is_empty(),
         matches,
-        interfaces_hint: Vec::new(),
     }
 }

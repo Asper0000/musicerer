@@ -1,5 +1,7 @@
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -50,6 +52,17 @@ pub fn unique_path(dir: &Path, stem: &str) -> PathBuf {
         counter += 1;
     }
     path
+}
+
+/// Serialises "pick a free name + move the file there" so two parallel downloads with the
+/// same title can never pick the same destination and overwrite each other.
+static PLACE_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn move_into_dir(src: &Path, dir: &Path, stem: &str) -> io::Result<PathBuf> {
+    let _guard = PLACE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let dest = unique_path(dir, stem);
+    fs::rename(src, &dest)?;
+    Ok(dest)
 }
 
 pub fn find_file_ext(dir: &Path, ext: &str) -> Option<PathBuf> {

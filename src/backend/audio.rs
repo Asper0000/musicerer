@@ -1,3 +1,4 @@
+use super::Thumb;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -34,23 +35,42 @@ pub fn find_thumbnail(audio_path: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn square_cover(src: &Path, temp_dir: &Path) -> Result<Vec<u8>, String> {
-    use image::GenericImageView;
+pub fn square_cover(src: &Path) -> Result<Vec<u8>, String> {
     let image = image::open(src).map_err(|e| e.to_string())?;
-    let (width, height) = image.dimensions();
+    encode_square_cover(image)
+}
+
+pub fn square_cover_from_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let image = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    encode_square_cover(image)
+}
+
+fn encode_square_cover(image: image::DynamicImage) -> Result<Vec<u8>, String> {
+    use std::io::Cursor;
+
+    let (width, height) = (image.width(), image.height());
     let side = width.min(height).max(1);
     let x = (width - side) / 2;
     let y = (height - side) / 2;
     let cropped = image.crop_imm(x, y, side, side);
-    let cover_path = temp_dir.join("cover_square.jpg");
+    let mut output = Cursor::new(Vec::new());
     cropped
-        .save_with_format(&cover_path, image::ImageFormat::Jpeg)
+        .write_to(&mut output, image::ImageFormat::Jpeg)
         .map_err(|e| e.to_string())?;
-    fs::read(cover_path).map_err(|e| e.to_string())
+    Ok(output.into_inner())
 }
 
-pub fn make_rounded_thumb(src: &Path, size: u32, radius: f32) -> Result<(u32, u32, Vec<u8>), String> {
+pub fn make_rounded_thumb(src: &Path, size: u32, radius: f32) -> Result<Thumb, String> {
     let img = image::open(src).map_err(|e| e.to_string())?;
+    round_thumb(img, size, radius)
+}
+
+pub fn make_rounded_thumb_from_bytes(bytes: &[u8], size: u32, radius: f32) -> Result<Thumb, String> {
+    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
+    round_thumb(img, size, radius)
+}
+
+fn round_thumb(img: image::DynamicImage, size: u32, radius: f32) -> Result<Thumb, String> {
     let (w0, h0) = (img.width(), img.height());
     let side = w0.min(h0).max(1);
     let x = (w0 - side) / 2;
@@ -81,4 +101,25 @@ pub fn make_rounded_thumb(src: &Path, size: u32, radius: f32) -> Result<(u32, u3
         }
     }
     Ok((w, h, pixels))
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::square_cover_from_bytes;
+    use std::io::Cursor;
+
+    #[test]
+    fn square_cover_from_bytes_returns_square_jpeg() {
+        let image = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(6, 4, |x, y| {
+            image::Rgb([x as u8 * 20, y as u8 * 30, 120])
+        }));
+        let mut input = Cursor::new(Vec::new());
+        image.write_to(&mut input, image::ImageFormat::Png).unwrap();
+
+        let result = square_cover_from_bytes(input.get_ref()).unwrap();
+        let decoded = image::load_from_memory(&result).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (4, 4));
+        assert_eq!(&result[..2], &[0xFF, 0xD8], "output should be JPEG encoded");
+    }
 }

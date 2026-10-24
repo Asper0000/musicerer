@@ -19,6 +19,8 @@ pub fn app_theme() -> Theme {
 pub fn bg() -> Color { Color::from_rgb(0.043, 0.043, 0.043) }
 pub fn surface() -> Color { Color::from_rgb(0.078, 0.078, 0.078) }
 pub fn surface_elevated() -> Color { Color::from_rgb(0.118, 0.118, 0.118) }
+/// Slightly lighter than `surface_elevated`, for rows nested inside a playlist dropdown.
+pub fn surface_nested() -> Color { Color::from_rgb(0.169, 0.169, 0.169) }
 pub fn border_subtle() -> Color { Color::from_rgb(0.169, 0.169, 0.169) }
 pub fn border_strong() -> Color { Color::from_rgb8(0x42, 0x42, 0x42) } // #424242
 pub fn text_primary() -> Color { Color::from_rgb(0.902, 0.902, 0.902) }
@@ -65,6 +67,14 @@ pub fn card(_: &Theme) -> container::Style {
 pub fn card_elevated(_: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(surface_elevated())),
+        border: border(border_strong(), 1.0, 6.0),
+        ..Default::default()
+    }
+}
+
+pub fn card_nested(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(surface_nested())),
         border: border(border_strong(), 1.0, 6.0),
         ..Default::default()
     }
@@ -164,6 +174,21 @@ pub fn secondary_button(_: &Theme, status: button::Status) -> button::Style {
             ..base
         },
         _ => base,
+    }
+}
+
+/// Borderless button for small inline controls such as the playlist dropdown arrow.
+pub fn ghost_button(_: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style {
+        background: Some(Background::Color(if hovered {
+            Color::from_rgb(0.240, 0.240, 0.240)
+        } else {
+            Color::TRANSPARENT
+        })),
+        text_color: text_primary(),
+        border: border(Color::TRANSPARENT, 0.0, 6.0),
+        ..Default::default()
     }
 }
 

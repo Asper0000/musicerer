@@ -4,14 +4,74 @@ use crate::ui::{
     icons::*,
     ItemStatus, QueueItem, ThumbState,
 };
-use iced::widget::{button, column, container, image, row, svg, text};
+use iced::widget::{button, column, container, image, row, svg, text, Column, Space};
 use iced::{Alignment, Color, Element, Length};
 
-pub fn queue_row<'a, M: 'a>(
+#[derive(Clone, Copy)]
+enum RowKind {
+    Top(usize),
+    Child,
+}
+
+/// State of the little dropdown control on a playlist's main row.
+#[derive(Clone, Copy)]
+struct Dropdown {
+    expanded: bool,
+    done: usize,
+    total: usize,
+}
+
+/// A queue entry: its main row, plus the collapsible list of playlist tracks if it has one.
+pub fn queue_group<'a, M>(
     index: usize,
     item: &'a QueueItem,
     downloading: bool,
+    on_remove: impl Fn(u64) -> M + Copy + 'a,
+    on_toggle: impl Fn(u64) -> M + Copy + 'a,
+) -> Element<'a, M>
+where
+    M: Clone + 'a,
+{
+    let group = item.group.as_ref().filter(|g| !g.children.is_empty());
+    let dropdown = group.map(|g| Dropdown {
+        expanded: g.expanded,
+        done: item.tracks().filter(|t| matches!(
+            t.status,
+            ItemStatus::Done | ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped | ItemStatus::Stopped
+        )).count(),
+        total: g.children.len() + 1,
+    });
+
+    let main = queue_row(RowKind::Top(index), item, downloading, dropdown, on_remove, on_toggle);
+
+    let Some(group) = group.filter(|g| g.expanded) else {
+        return main;
+    };
+
+    let children = Column::with_children(
+        group
+            .children
+            .iter()
+            .map(|child| queue_row(RowKind::Child, child, downloading, None, on_remove, on_toggle))
+            .collect::<Vec<_>>(),
+    )
+    .spacing(3);
+
+    column![
+        main,
+        container(children).padding(0.0),
+    ]
+    .spacing(3)
+    .into()
+}
+
+fn queue_row<'a, M>(
+    kind: RowKind,
+    item: &'a QueueItem,
+    downloading: bool,
+    dropdown: Option<Dropdown>,
     on_remove: impl Fn(u64) -> M + 'a,
+    on_toggle: impl Fn(u64) -> M + 'a,
 ) -> Element<'a, M>
 where
     M: Clone + 'a,
@@ -21,6 +81,7 @@ where
         ItemStatus::Downloading => (theme::primary(), ICON_STATUS_DOWNLOADING),
         ItemStatus::Done => (theme::success(), ICON_STATUS_CHECK),
         ItemStatus::Failed => (theme::danger(), ICON_STATUS_X),
+        ItemStatus::Unavailable => (theme::text_muted(), ICON_STATUS_X),
         ItemStatus::DrmSkipped => (theme::text_muted(), ICON_STATUS_SLASH),
         ItemStatus::Stopped => (theme::danger(), ICON_STATUS_SQUARE),
     };
@@ -72,9 +133,10 @@ where
         .height(Length::Fixed(12.0))
         .style(move |_, _| svg::Style { color: Some(source_color) });
 
+    let status_label = if item.resolving { "Reading playlist" } else { item.status.label() };
     let subtitle = row![
         source_glyph,
-        text(format!("{} \u{00B7} {}", item.status.label(), item.source.label()))
+        text(format!("{} \u{00B7} {}", status_label, item.source.label()))
             .size(10)
             .style(move |_| iced::widget::text::Style { color: Some(status_color) }),
     ]
@@ -86,34 +148,87 @@ where
         .style(theme::secondary_button)
         .padding([3, 8]);
 
-    let row_content = row![
-        text(format!("{:>2}", index + 1))
+    let (lead, name_limit): (Element<'a, M>, usize) = match kind {
+        RowKind::Top(index) => (
+            text(format!("{:>2}", index + 1))
+                .size(11)
+                .width(Length::Fixed(20.0))
+                .style(theme::muted_text_strong)
+                .into(),
+            60,
+        ),
+        RowKind::Child => (Space::new().width(Length::Fixed(20.0)).into(), 54),
+    };
+
+    let progress_text: Element<'a, M> = if item.resolving {
+        Space::new().width(Length::Fixed(36.0)).into()
+    } else {
+        text(format!("{:.0}%", item.progress * 100.0))
             .size(11)
-            .width(Length::Fixed(20.0))
-            .style(theme::muted_text_strong),
+            .width(Length::Fixed(36.0))
+            .style(theme::muted_text)
+            .into()
+    };
+
+    let mut row_content = row![
+        lead,
         status_glyph,
         thumbnail,
         column![
-            text(truncate(&item.display_name, 60)).size(12),
+            text(truncate(&item.display_name, name_limit)).size(12),
             subtitle,
         ]
         .spacing(2)
         .width(Length::Fill),
-        text(format!("{:.0}%", item.progress * 100.0))
-            .size(11)
-            .width(Length::Fixed(36.0))
-            .style(theme::muted_text),
-        remove_btn,
+        progress_text,
     ]
     .spacing(8)
     .padding([6, 8])
     .align_y(Alignment::Center);
 
+    if let Some(dd) = dropdown {
+        row_content = row_content.push(dropdown_button(item.id, dd, on_toggle));
+    }
+    row_content = row_content.push(remove_btn);
+
+    let (style, height): (fn(&iced::Theme) -> container::Style, f32) = match kind {
+        RowKind::Top(_) => (theme::card_elevated, 56.0),
+        RowKind::Child => (theme::card_nested, 52.0),
+    };
+
     container(row_content)
-        .style(theme::card_elevated)
+        .style(style)
         .width(Length::Fill)
-        .height(Length::Fixed(56.0))
+        .height(Length::Fixed(height))
         .into()
+}
+
+fn dropdown_button<'a, M>(
+    id: u64,
+    dd: Dropdown,
+    on_toggle: impl Fn(u64) -> M + 'a,
+) -> Element<'a, M>
+where
+    M: Clone + 'a,
+{
+    let icon = if dd.expanded { ICON_CHEVRON_DOWN } else { ICON_CHEVRON_RIGHT };
+    button(
+        row![
+            text(format!("{}/{}", dd.done, dd.total))
+                .size(10)
+                .style(theme::muted_text),
+            svg(svg::Handle::from_memory(icon))
+                .width(Length::Fixed(14.0))
+                .height(Length::Fixed(14.0))
+                .style(|_, _| svg::Style { color: Some(theme::text_secondary()) }),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .on_press(on_toggle(id))
+    .style(theme::ghost_button)
+    .padding([4, 6])
+    .into()
 }
 
 pub fn truncate(value: &str, max_chars: usize) -> String {

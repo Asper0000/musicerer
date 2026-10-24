@@ -4,7 +4,7 @@ use crate::theme as t;
 use crate::ui::{
     custom_progress_bar,
     icons::{ICON_ALERT_TRIANGLE, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS, ICON_SRC_SOUNDCLOUD, ICON_SRC_YOUTUBE},
-    queue::queue_row,
+    queue::queue_group,
     ItemStatus, UiLogLevel, View,
 };
 
@@ -124,7 +124,7 @@ impl App {
             .width(Length::Fixed(22.0))
             .height(Length::Fixed(22.0));
 
-        let title = text("Musicerer v0.1").size(13).style(t::muted_text_strong);
+        let title = text("Musicerer v0.2").size(13).style(t::muted_text_strong);
 
         let min_btn = button(
             container(svg(svg::Handle::from_memory(ICON_MINIMIZE)).width(Length::Fixed(12.0)).height(Length::Fixed(12.0)).style(|_, _| svg::Style { color: Some(t::text_primary()) }))
@@ -421,13 +421,16 @@ impl App {
             .padding(10)
             .width(Length::Fill);
 
+        let track_count = self.tracks().count();
+        let resolving = self.queue.iter().any(|i| i.resolving);
+
         let queue_header = row![
             text("Queue").size(14),
             Space::new().width(Length::Fill),
             text(format!(
                 "{} track{}",
-                self.queue.len(),
-                if self.queue.len() == 1 { "" } else { "s" }
+                track_count,
+                if track_count == 1 { "" } else { "s" }
             ))
             .size(11)
             .style(t::muted_text),
@@ -453,7 +456,9 @@ impl App {
             self.queue
                 .iter()
                 .enumerate()
-                .map(|(i, item)| queue_row(i, item, self.downloading, Message::RemoveTrack))
+                .map(|(i, item)| {
+                    queue_group(i, item, self.downloading, Message::RemoveTrack, Message::ToggleGroup)
+                })
                 .collect()
         };
 
@@ -468,7 +473,8 @@ impl App {
 
         let download_all = button(text("Download All").size(13))
             .on_press_maybe(
-                (!self.downloading && !self.queue.is_empty()).then_some(Message::StartQueue),
+                (!self.downloading && !self.queue.is_empty() && !resolving)
+                    .then_some(Message::StartQueue),
             )
             .style(t::primary_button)
             .padding([8, 14]);
@@ -502,7 +508,7 @@ impl App {
         .spacing(6)
         .align_y(Alignment::Center);
 
-        let progress = custom_progress_bar(self.current_progress);
+        let progress = custom_progress_bar(self.overall_progress());
 
         let mut content = Column::new()
             .spacing(10)
@@ -557,7 +563,7 @@ impl App {
     fn view_settings(&self) -> Element<'_, Message> {
         let header = text("Settings").size(20);
 
-        let output_input = text_input("Output folderâ€¦", &self.output_dir)
+        let output_input = text_input("Output folder\u{2026}", &self.output_dir)
             .on_input(Message::OutputDirChanged)
             .padding(10)
             .size(13)
@@ -631,16 +637,17 @@ impl App {
 
     fn view_status_bar(&self) -> Element<'_, Message> {
         let status_text = text(self.status.as_str()).size(11).style(t::muted_text);
-        let done = self.queue.iter().filter(|i| i.status == ItemStatus::Done).count();
+        let done = self.tracks().filter(|i| i.status == ItemStatus::Done).count();
+        let unavailable = self.tracks().filter(|i| i.status == ItemStatus::Unavailable).count();
         let bad = self
-            .queue
-            .iter()
+            .tracks()
             .filter(|i| matches!(i.status, ItemStatus::Failed | ItemStatus::Stopped))
             .count();
         let counts = text(format!(
-            "{} tracks  |  {} done  |  {} failed",
-            self.queue.len(),
+            "{} tracks  |  {} done  |  {} unavailable  |  {} failed",
+            self.tracks().count(),
             done,
+            unavailable,
             bad
         ))
         .size(11)

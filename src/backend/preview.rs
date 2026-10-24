@@ -1,29 +1,64 @@
-use super::{audio::make_rounded_thumb, detect_source, emit, soundcloud_fallback, Source, WorkerEvent};
+use super::{audio::{make_rounded_thumb, make_rounded_thumb_from_bytes}, detect_source, emit, process, soundcloud_fallback, Inbox, Source, Thumb, WorkerEvent};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::thread;
+
+const PREVIEW_WORKERS: usize = 3;
 
 pub struct Preview {
     pub title: String,
-    pub thumb: Option<(u32, u32, Vec<u8>)>,
+    pub thumb: Option<Thumb>,
 }
 
 pub fn spawn_preview(
     id: u64,
     url: String,
     cookies: Option<PathBuf>,
-    inbox: Arc<Mutex<Vec<WorkerEvent>>>,
+    inbox: Inbox,
 ) {
-    thread::spawn(move || {
-        match fetch_preview(&url, cookies.as_deref()) {
-            Ok(p) => emit(&inbox, WorkerEvent::PreviewReady {
-                id, title: p.title, thumb: p.thumb,
-            }),
-            Err(e) => emit(&inbox, WorkerEvent::PreviewFailed { id, error: e }),
-        }
-    });
+    spawn_previews(vec![(id, url)], cookies, inbox);
+}
+
+/// Refreshes track-level metadata with a small worker pool. SoundCloud's flat
+/// playlist entries can contain creator artwork or omit title/artwork entirely;
+/// re-resolving the individual track URL gives the same metadata as adding that
+/// track directly, without spawning hundreds of yt-dlp processes at once.
+pub fn spawn_previews(
+    jobs: Vec<(u64, String)>,
+    cookies: Option<PathBuf>,
+    inbox: Inbox,
+) {
+    if jobs.is_empty() {
+        return;
+    }
+
+    let workers = PREVIEW_WORKERS.min(jobs.len());
+    let jobs = Arc::new(jobs);
+    let next = Arc::new(AtomicUsize::new(0));
+
+    for _ in 0..workers {
+        let (jobs, next, cookies, inbox) = (
+            jobs.clone(),
+            next.clone(),
+            cookies.clone(),
+            inbox.clone(),
+        );
+        thread::spawn(move || loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some((id, url)) = jobs.get(index) else { break; };
+            let event = match fetch_preview(url, cookies.as_deref()) {
+                Ok(p) => WorkerEvent::PreviewReady {
+                    id: *id,
+                    title: p.title,
+                    thumb: p.thumb,
+                },
+                Err(error) => WorkerEvent::PreviewFailed { id: *id, error },
+            };
+            emit(&inbox, event);
+        });
+    }
 }
 
 fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
@@ -34,13 +69,8 @@ fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
         .map_err(|e| e.to_string())?;
     let out_tpl = tmp.path().join("%(id)s.%(ext)s");
 
-    let mut cmd = Command::new("yt-dlp");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000);
-    }
-    
+    let mut cmd = process::hidden_command("yt-dlp");
+
     cmd.arg("--skip-download")
         .arg("--write-thumbnail")
         .arg("--convert-thumbnails").arg("jpg")
@@ -68,8 +98,10 @@ fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
     let output = cmd.output().map_err(|e| format!("spawn failed: {e}"))?;
     if !output.status.success() {
         if source == Source::SoundCloud {
-            if let Ok((title, thumb_path)) = soundcloud_fallback::fetch_oembed(url) {
-                let thumb = thumb_path.and_then(|p| make_rounded_thumb(&p, 40, 8.0).ok());
+            if let Ok((title, thumb_bytes)) = soundcloud_fallback::fetch_oembed(url) {
+                let thumb = thumb_bytes
+                    .as_deref()
+                    .and_then(|bytes| make_rounded_thumb_from_bytes(bytes, 40, 8.0).ok());
                 return Ok(Preview { title, thumb });
             }
         }

@@ -9,7 +9,7 @@ use iced::widget::image;
 pub enum View { Downloads, Settings }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemStatus { Pending, Downloading, Done, Failed, DrmSkipped, Stopped }
+pub enum ItemStatus { Pending, Downloading, Done, Failed, Unavailable, DrmSkipped, Stopped }
 
 impl ItemStatus {
     pub fn label(self) -> &'static str {
@@ -18,6 +18,7 @@ impl ItemStatus {
             ItemStatus::Downloading => "Downloading",
             ItemStatus::Done => "Done",
             ItemStatus::Failed => "Failed",
+            ItemStatus::Unavailable => "Unavailable",
             ItemStatus::DrmSkipped => "DRM skipped",
             ItemStatus::Stopped => "Stopped",
         }
@@ -31,6 +32,13 @@ pub enum ThumbState {
     Failed,
 }
 
+/// The extra tracks of a playlist, shown in a collapsible dropdown under the main row.
+#[derive(Clone)]
+pub struct PlaylistGroup {
+    pub children: Vec<QueueItem>,
+    pub expanded: bool,
+}
+
 #[derive(Clone)]
 pub struct QueueItem {
     pub id: u64,
@@ -40,6 +48,44 @@ pub struct QueueItem {
     pub progress: f32,
     pub display_name: String,
     pub thumbnail: ThumbState,
+    /// A playlist URL that is still being expanded into tracks.
+    pub resolving: bool,
+    pub group: Option<PlaylistGroup>,
+}
+
+impl QueueItem {
+    pub fn new(id: u64, url: String, source: Source, display_name: String) -> Self {
+        Self {
+            id,
+            url,
+            source,
+            status: ItemStatus::Pending,
+            progress: 0.0,
+            display_name,
+            thumbnail: ThumbState::Loading,
+            resolving: false,
+            group: None,
+        }
+    }
+
+    /// This row's own track followed by every playlist child: all downloadable tracks.
+    pub fn tracks(&self) -> impl Iterator<Item = &QueueItem> {
+        std::iter::once(self).chain(self.group.iter().flat_map(|g| g.children.iter()))
+    }
+
+    pub fn for_each_track_mut(&mut self, mut f: impl FnMut(&mut QueueItem)) {
+        f(self);
+        if let Some(group) = &mut self.group {
+            group.children.iter_mut().for_each(f);
+        }
+    }
+
+    pub fn find_mut(&mut self, id: u64) -> Option<&mut QueueItem> {
+        if self.id == id {
+            return Some(self);
+        }
+        self.group.as_mut()?.children.iter_mut().find(|c| c.id == id)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
