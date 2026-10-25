@@ -2,7 +2,9 @@
 //! `yt-dlp --flat-playlist` (one fast call, no per-track process), and loading
 //! the track thumbnails on a small pool of threads.
 
-use super::{audio, detect_source, emit, log, process, Inbox, LogLevel, Source, WorkerEvent};
+use super::tools::{self, Tool};
+use super::utils::USER_AGENT;
+use super::{audio, detect_source, emit, log, Inbox, LogLevel, Source, WorkerEvent};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -78,7 +80,7 @@ pub fn spawn_resolve(id: u64, url: String, cookies: Option<PathBuf>, inbox: Inbo
 }
 
 fn fetch_playlist(url: &str, cookies: Option<&Path>, inbox: &Inbox) -> Result<Playlist, String> {
-    let mut cmd = process::hidden_command("yt-dlp");
+    let mut cmd = tools::command(Tool::YtDlp);
     cmd.arg("--flat-playlist")
         .arg("--dump-single-json")
         .arg("--ignore-errors")
@@ -188,10 +190,7 @@ pub fn spawn_thumbnails(jobs: Vec<(u64, String)>, inbox: Inbox) {
 fn fetch_thumb(agent: &ureq::Agent, url: &str) -> Result<super::Thumb, String> {
     let response = agent
         .get(url)
-        .set(
-            "User-Agent",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
+        .set("User-Agent", USER_AGENT)
         .set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
         .call()
         .map_err(|e| e.to_string())?;

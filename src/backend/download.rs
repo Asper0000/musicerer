@@ -1,6 +1,7 @@
 use super::scheduler::{self, Job, Outcome};
 use super::{
-    audio, detect_source, emit, log, process, soundcloud_fallback, tagging, utils, Inbox, LogLevel,
+    audio, detect_source, emit, log, process, soundcloud_fallback, tagging,
+    tools::{self, Tool}, utils, Inbox, LogLevel,
     Source, TrackResult, WorkerEvent,
 };
 use std::collections::VecDeque;
@@ -164,7 +165,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     };
 
     let output_template = temp.path().join("%(title)s.%(ext)s");
-    let mut cmd = process::hidden_command("yt-dlp");
+    let mut cmd = tools::command(Tool::YtDlp);
 
     cmd.arg("--newline")
         .arg("--no-playlist")
@@ -178,11 +179,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         .arg("--fragment-retries").arg("20")
         .arg("-o").arg(&output_template);
 
-    if let Some(ff) = soundcloud_fallback::find_tool("ffmpeg.exe") {
-        if let Some(parent) = ff.parent() {
-            cmd.arg("--ffmpeg-location").arg(parent);
-        }
-    }
+    tools::add_ffmpeg_location(&mut cmd);
 
     match source {
         Source::YouTube => {
@@ -210,7 +207,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(err) => {
-            tlog(ctx, job, LogLevel::Error, format!("Could not start yt-dlp (is it on PATH?): {err}"));
+            tlog(ctx, job, LogLevel::Error, format!("Could not start yt-dlp (missing from the tools folder and PATH?): {err}"));
             return fin(TrackResult::Error);
         }
     };
@@ -304,7 +301,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
 
     // --- Go+ Preview Detection ---
     if source == Source::SoundCloud {
-        if let Some(ffprobe) = soundcloud_fallback::find_tool("ffprobe.exe") {
+        if let Some(ffprobe) = tools::find(Tool::Ffprobe) {
             if let Ok(duration) = get_audio_duration(&ffprobe, &audio_path) {
                 if duration < 45.0 {
                     tlog(ctx, job, LogLevel::Error, "SoundCloud Go+ track detected (preview only). Failing download due to Go+ protection.");

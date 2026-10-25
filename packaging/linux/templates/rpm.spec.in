@@ -1,0 +1,30 @@
+# Packages prebuilt binaries, so skip debuginfo, stripping and dependency scanning
+# (the bundled tools are third-party executables we must not rewrite or analyse).
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+AutoReqProv: no
+
+Name:       musicerer
+Version:    @VERSION@
+Release:    1
+Summary:    @SUMMARY@
+License:    GPL-3.0-only
+BuildArch:  @RPM_ARCH@
+Recommends: xdg-desktop-portal
+
+%description
+Musicerer downloads audio from YouTube and SoundCloud with yt-dlp and saves it as
+AAC .m4a files with metadata and square cover art. yt-dlp, ffmpeg, ffprobe, deno
+and the optional SoundCloud fallback tool are bundled in /usr/lib/musicerer/tools,
+so nothing else needs to be installed.
+
+%install
+mkdir -p %{buildroot}
+cp -a @STAGE@/. %{buildroot}/
+
+%files
+/usr/bin/musicerer
+/usr/lib/musicerer
+/usr/share/applications/musicerer.desktop
+/usr/share/icons/hicolor/scalable/apps/musicerer.svg
+%license /usr/share/doc/musicerer/LICENSE

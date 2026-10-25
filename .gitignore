@@ -4,11 +4,10 @@
 *.exp
 .DS_Store
 Thumbs.db
-/tools
 
-# Generated Linux packaging artifacts
-/AppDir/
-/*.AppImage
-/appimagetool
-/ffmpeg
-/ffmpeg-release-amd64-static.tar.xz
+# Tool binaries (large, supplied locally): Windows .exe files and Linux ELF files
+/tools
+/linux_tools
+
+# Build output
+/dist

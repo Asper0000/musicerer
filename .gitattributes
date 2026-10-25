@@ -1,0 +1,7 @@
+# Shell scripts and their templates must keep LF endings or WSL/bash cannot run them.
+*.sh           text eol=lf
+*.in           text eol=lf
+AppRun         text eol=lf
+*.desktop      text eol=lf
+# Batch files must stay CRLF.
+*.bat          text eol=crlf

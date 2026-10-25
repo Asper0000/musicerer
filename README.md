@@ -38,23 +38,22 @@
 
 Unlike traditional downloaders that rely on bulky web frameworks, Musicerer is built entirely in Rust using **Iced** and **tiny-skia**. It renders purely on the CPU, requires no GPU, and features a completely custom, borderless dark UI with native window resizing.
 
-- **Convenient to run.** On Windows, `ffmpeg` and `ffprobe` are embedded in the executable. `yt-dlp` and Deno remain external runtime dependencies; the optional SoundCloud fallback is only needed for DRM-protected SoundCloud tracks.
+- **Convenient to run.** The Windows release comes in two flavours: a **bundled** `.exe` with `yt-dlp`, `ffmpeg`, `ffprobe`, Deno and the optional SoundCloud fallback tool all packed inside, and a slim **portable** `.exe` that uses a `tools` folder or your `PATH`.
 - **Safe & clean.** Downloads run in isolated temporary directories and move to your output folder atomically.
 - **Low-impact.** It keeps preferences in the current user’s config directory and does not modify system registries.
 
-> **Side Note:** The current Windows executable is quite large because it bundles a full, uncompressed build of FFmpeg. A future update will strip down unnecessary FFmpeg components to significantly reduce the final binary size.
+> **Side Note:** The bundled Windows executable is large because it embeds full, uncompressed builds of the tools above (FFmpeg and Deno are the biggest).
 
 ---
 
 ## Features
 
 - 🎵 **Platform support**: Add individual tracks or playlists from YouTube and SoundCloud.
-- 📦 **Embedded Windows tools**: Bundles `ffmpeg.exe` and `ffprobe.exe` into the executable. `yt-dlp.exe` and Deno remain external requirements. `soundcloud.exe` is optional and is only used by the DRM fallback.
+- 📦 **Two Windows builds**: `bundled` embeds all five tools (`yt-dlp`, `ffmpeg`, `ffprobe`, `deno`, `soundcloud`); `portable` embeds none, looks in a `tools` folder (current directory, then next to the exe), then on `PATH`, and shows a warning listing whatever is missing.
 - 🎨 **Custom UI**: Frameless window, dark monochrome theme with blue accents, and draggable/resizable edges.
 - 🖼️ **Track metadata**: Embeds available title, artist, album, and center-cropped 1:1 cover art into the saved file.
 - 📊 **Queue management**: Real-time progress bars, track previews, and detailed log output.
-- 🧭 **Clearer YouTube failures**: unavailable videos are reported separately from real download errors, and HTTP 403 failures get one retry with an alternate player client.
-- 🎧 **SoundCloud playlist metadata**: each playlist track gets its own title and artwork instead of inheriting the creator's avatar or playlist metadata.
+- 🎧 **Playlist support**: Playlists are fully supported for all platforms.
 - 💾 **Persistent settings**: Saves your output directory and cookies path automatically in your OS config directory.
 - 💽 **Storage monitor**: Shows available and total disk space for the output drive.
 
@@ -87,36 +86,85 @@ To build Musicerer, install the Rust toolchain and the runtime tools required by
 ### Prerequisites
 
 - **Rust** 1.95 or newer (required by the atomic `try_update` API used by the scheduler; Iced 0.14 itself requires 1.88)
-- **yt-dlp** available on `PATH`
-- **Deno**, required for some YouTube JavaScript challenges
+- **yt-dlp**, **ffmpeg**/**ffprobe** and **Deno** (required for some YouTube JavaScript challenges), either in a `tools` folder or on `PATH`
 
 ### Setup (Windows)
 
-To embed FFmpeg tools into the Windows `.exe`, place these files in a `tools/` folder at the project root before compiling:
-- `ffmpeg.exe`
-- `ffprobe.exe`
+Put these files in a `tools/` folder at the project root:
+`yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`, `deno.exe`, `soundcloud.exe`
 
-For `run.bat`, also place `yt-dlp.exe` in `tools/`; when building manually, `yt-dlp` must be available on `PATH`. `soundcloud.exe` is optional and is not embedded: place it in `tools/` beside the executable (or on `PATH`) only if you want to enable the best-effort fallback for DRM-protected SoundCloud tracks. The application builds and ordinary downloads work without it.
+Then run:
+
+~~~bat
+build.bat            :: both builds
+build.bat bundled    :: only the all-in-one exe
+build.bat portable   :: only the slim exe
+~~~
+
+Results:
+
+- `dist\bundled\musicerer.exe` - everything embedded; extracted on first use to `%TEMP%\musicerer-tools-<version>`.
+- `dist\portable\musicerer.exe` - nothing embedded. Place the tools in `dist\portable\tools\` (or put them on `PATH`). If required tools are missing, the app still opens and shows a warning dialog listing them. `soundcloud.exe` is optional (DRM fallback only).
+
+The `bundled` build needs all five files present at compile time; the `portable` build compiles without them.
 
 ### Setup (Linux)
 
-> **⚠️ Warning:** The Linux build has not been tested at all. While the codebase includes Linux-specific configurations (such as skipping embedded binaries and providing an AppImage build script), it has not been verified on a real Linux machine. Proceed at your own risk.
+Linux packages are built from Windows through WSL, or directly on any Linux machine. Tools are never embedded in the executable on Linux; instead the packages ship them in a `tools` folder next to the real binary (`/usr/lib/musicerer/tools`), which Musicerer already searches.
 
-On Linux, Windows binaries are not embedded. Install `yt-dlp`, `ffprobe`, and (for non-AppImage runs) `ffmpeg` through your package manager. The AppImage helper bundles `ffmpeg`; `yt-dlp` and `ffprobe` must still be available on `PATH` at runtime. The optional SoundCloud fallback requires a compatible `soundcloud` executable if you want that fallback on Linux.
+Put these **Linux** binaries in a `linux_tools/` folder at the project root:
+`yt-dlp`, `ffmpeg`, `ffprobe`, `deno`, `soundcloud` (the build refuses Windows `.exe` files).
+
+One-time setup inside WSL (Ubuntu/Debian shown; use your distro's equivalents):
+
 ~~~bash
-sudo apt update
-sudo apt install build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev libxi-dev libxkbcommon-dev libwayland-dev ffmpeg yt-dlp
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh     # Linux Rust toolchain (the Windows one is not used)
+sudo apt install build-essential pkg-config libx11-dev libxcursor-dev libxrandr-dev \
+                 libxi-dev libxkbcommon-dev libwayland-dev           # GUI build libraries
+sudo apt install rpm curl                                           # for .rpm and the AppImage tool download
 ~~~
 
-### Build
+Then, from Windows:
 
-Open your terminal in the project root and run:
+~~~bat
+build.bat linux        :: AppImage + .deb + .rpm
+build.bat appimage     :: or deb / rpm, individually
+build.bat all          :: both Windows builds and all Linux packages
+build.bat portable deb :: targets can be combined
+~~~
+
+On a native Linux machine run `packaging/linux/build.sh [appimage] [deb] [rpm]` instead.
+
+### Build (plain cargo)
 
 ~~~bash
 cargo build --release
 ~~~
 
-The executable will be located at `target/release/musicerer` (or `musicerer.exe` on Windows).
+The executable will be at `target/release/musicerer`. Without a package it looks for tools in a `tools` folder, then on `PATH`.
+
+### Output layout
+
+~~~text
+dist/
+  bundled/musicerer.exe
+  portable/musicerer.exe  (+ tools/)
+  linux/
+    appimage/Musicerer-<version>-<arch>.AppImage
+    deb/musicerer_<version>_<arch>.deb
+    rpm/musicerer-<version>-1.<arch>.rpm
+~~~
+
+### Project layout
+
+~~~text
+build.bat                Windows entry point; also drives the Linux build through WSL
+packaging/linux/         build.sh (entry), common.sh, appimage.sh, deb.sh, rpm.sh,
+                         AppRun, musicerer.desktop, templates/ (deb control, rpm spec)
+tools/                   Windows tool binaries (git-ignored)
+linux_tools/             Linux tool binaries (git-ignored)
+src/  assets/            application source and icons
+~~~
 
 ---
 

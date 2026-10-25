@@ -7,6 +7,7 @@ mod scheduler;
 mod tagging;
 mod utils;
 pub mod soundcloud_fallback;
+pub mod tools;
 pub mod vpn;
 
 pub use download::spawn_worker;

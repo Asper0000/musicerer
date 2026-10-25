@@ -1,0 +1,4 @@
+#!/bin/sh
+# The app finds its bundled tools through the "tools" folder next to its real executable.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec "$HERE/usr/lib/musicerer/musicerer" "$@"

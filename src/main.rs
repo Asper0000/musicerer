@@ -6,15 +6,28 @@ mod theme;
 mod ui;
 
 use app::App;
-use std::path::PathBuf;
+
+const WINDOW_ICON: &[u8] = include_bytes!("../assets/icon.ico");
+
+/// Checks for the external tools off the UI thread and, if any required one is
+/// missing, shows a native warning. The app itself opens regardless.
+fn warn_about_missing_tools() {
+    std::thread::spawn(|| {
+        if let Some(text) = backend::tools::missing_report() {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Musicerer - missing tools")
+                .set_description(text)
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
+        }
+    });
+}
 
 fn main() -> iced::Result {
-    let icon_path = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("assets").join("icon.ico")))
-        .filter(|path| path.is_file())
-        .unwrap_or_else(|| PathBuf::from("assets/icon.ico"));
-    let icon = iced::window::icon::from_file(icon_path).ok();
+    warn_about_missing_tools();
+
+    let icon = iced::window::icon::from_file_data(WINDOW_ICON, None).ok();
 
     iced::application(App::new, App::update, App::view)
         .title("Musicerer")

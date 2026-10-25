@@ -1,0 +1,14 @@
+Package: musicerer
+Version: @VERSION@
+Architecture: @DEB_ARCH@
+Maintainer: @MAINTAINER@
+Installed-Size: @SIZE_KB@
+Section: sound
+Priority: optional
+Depends: libc6
+Recommends: xdg-desktop-portal
+Description: @SUMMARY@
+ Musicerer downloads audio from YouTube and SoundCloud with yt-dlp and saves it as
+ AAC .m4a files with metadata and square cover art. yt-dlp, ffmpeg, ffprobe, deno
+ and the optional SoundCloud fallback tool are bundled in /usr/lib/musicerer/tools,
+ so nothing else needs to be installed.

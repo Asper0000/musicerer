@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Musicerer
+GenericName=Audio Downloader
+Comment=Queue downloader that extracts audio into tagged AAC files
+Exec=musicerer
+Icon=musicerer
+Terminal=false
+Categories=AudioVideo;Audio;Network;
+Keywords=youtube;soundcloud;music;download;m4a;

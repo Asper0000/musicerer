@@ -1,4 +1,5 @@
-use super::{audio::{make_rounded_thumb, make_rounded_thumb_from_bytes}, detect_source, emit, process, soundcloud_fallback, Inbox, Source, Thumb, WorkerEvent};
+use super::{audio::{make_rounded_thumb, make_rounded_thumb_from_bytes}, detect_source, emit, soundcloud_fallback,
+    tools::{self, Tool}, Inbox, Source, Thumb, WorkerEvent};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -69,7 +70,7 @@ fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
         .map_err(|e| e.to_string())?;
     let out_tpl = tmp.path().join("%(id)s.%(ext)s");
 
-    let mut cmd = process::hidden_command("yt-dlp");
+    let mut cmd = tools::command(Tool::YtDlp);
 
     cmd.arg("--skip-download")
         .arg("--write-thumbnail")
@@ -80,11 +81,7 @@ fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
         .arg("--no-color")
         .arg("-o").arg(&out_tpl);
 
-    if let Some(ff) = soundcloud_fallback::find_tool("ffmpeg.exe") {
-        if let Some(parent) = ff.parent() {
-            cmd.arg("--ffmpeg-location").arg(parent);
-        }
-    }
+    tools::add_ffmpeg_location(&mut cmd);
 
     if source == Source::YouTube {
         cmd.arg("--js-runtimes").arg("deno")
