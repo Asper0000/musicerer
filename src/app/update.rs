@@ -51,8 +51,41 @@ impl App {
                 if source == Source::Unsupported {
                     self.push_log(
                         UiLogLevel::Warn,
-                        "Only SoundCloud and YouTube links are supported.",
+                        "Only SoundCloud, YouTube and Spotify links are supported.",
                     );
+                    self.show_log = true;
+                    self.log_attention = 16;
+                    return Task::none();
+                }
+                if source == Source::Spotify {
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    let is_pl = crate::backend::spotify::is_spotify_playlist_url(&url);
+                    let display_name = if is_pl {
+                        READING_PLAYLIST.to_string()
+                    } else {
+                        guess_name_from_url(&url, source)
+                    };
+                    let mut item = QueueItem::new(id, url.clone(), source, display_name);
+                    item.resolving = true;
+                    if is_pl {
+                        let start = self.next_id;
+                        self.next_id += 500;
+                        crate::backend::spotify::spawn_resolve_playlist(
+                            id,
+                            url,
+                            self.inbox.clone(),
+                            start,
+                        );
+                    } else {
+                        crate::backend::spotify::spawn_resolve_track(
+                            id,
+                            url,
+                            self.inbox.clone(),
+                        );
+                    }
+                    self.queue.push(item);
+                    self.url_input.clear();
                     return Task::none();
                 }
                 let id = self.next_id;
@@ -120,6 +153,18 @@ impl App {
                 self.cookies_input = v;
                 self.save_config();
             }
+            Message::ToggleGroupPlaylists(v) => {
+                self.group_playlists = v;
+                self.save_config();
+            }
+            Message::SpotifyClientIdChanged(v) => {
+                self.spotify_client_id = v;
+                self.save_config();
+            }
+            Message::SpotifyClientSecretChanged(v) => {
+                self.spotify_client_secret = v;
+                self.save_config();
+            }
             Message::BrowseCookies => {
                 return Task::perform(
                     async {
@@ -168,10 +213,21 @@ impl App {
                     self.push_log(UiLogLevel::Warn, "Wait for playlists to finish loading first.");
                     return Task::none();
                 }
-                let items = self
-                    .tracks()
-                    .map(|t| (t.id, t.url.clone()))
-                    .collect::<Vec<_>>();
+                let mut items = Vec::new();
+                for entry in &self.queue {
+                    let folder = if self.group_playlists {
+                        entry.playlist_title.clone()
+                    } else {
+                        None
+                    };
+                    for t in entry.tracks() {
+                        let download_url = t
+                            .resolved_url
+                            .clone()
+                            .unwrap_or_else(|| t.url.clone());
+                        items.push((t.id, download_url, t.spotify.clone(), folder.clone()));
+                    }
+                }
                 for item in &mut self.queue {
                     item.for_each_track_mut(|t| {
                         t.status = ItemStatus::Pending;
@@ -191,14 +247,27 @@ impl App {
                     self.stop_flag.clone(),
                 );
             }
-            Message::StopQueue => {
+Message::StopQueue => {
+                self.stop_flag.store(true, Ordering::SeqCst);
+                for item in self.queue.iter_mut() {
+                    if item.resolving {
+                        item.resolving = false;
+                        item.status = ItemStatus::Stopped;
+                    }
+                }
                 if self.downloading {
-                    self.stop_flag.store(true, Ordering::SeqCst);
-                    self.status = "Stopping\u{2026}".to_string();
-                    self.push_log(UiLogLevel::Warn, "Stop requested.");
+                    self.status = "Stopping...".to_string();
+                    self.push_log(
+                        UiLogLevel::Warn,
+                        "Stop requested - terminating active downloads.",
+                    );
                 }
             }
-            Message::PollWorker => {
+Message::PollWorker => {
+                self.tick = self.tick.wrapping_add(1);
+                if self.log_attention > 0 {
+                    self.log_attention = self.log_attention.saturating_sub(1);
+                }
                 let events = {
                     let mut g = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
                     std::mem::take(&mut *g)

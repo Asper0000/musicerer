@@ -7,6 +7,7 @@ mod scheduler;
 mod tagging;
 mod utils;
 pub mod soundcloud_fallback;
+pub mod spotify;
 pub mod tools;
 pub mod vpn;
 
@@ -23,13 +24,14 @@ pub type Inbox = Arc<Mutex<Vec<WorkerEvent>>>;
 pub enum TrackResult { Ok, Drm, Unavailable, Error, Stopped }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source { SoundCloud, YouTube, Unsupported }
+pub enum Source { SoundCloud, YouTube, Spotify, Unsupported }
 
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
             Source::SoundCloud => "SoundCloud",
             Source::YouTube => "YouTube",
+            Source::Spotify => "Spotify",
             Source::Unsupported => "Unsupported",
         }
     }
@@ -51,6 +53,8 @@ pub fn detect_source(url: &str) -> Source {
         Source::YouTube
     } else if host == "soundcloud.com" || host.ends_with(".soundcloud.com") {
         Source::SoundCloud
+    } else if host == "open.spotify.com" || host == "spotify.com" || host.ends_with(".spotify.com") {
+        Source::Spotify
     } else {
         Source::Unsupported
     }
@@ -79,6 +83,15 @@ pub enum WorkerEvent {
 
     PlaylistResolved { id: u64, title: String, entries: Vec<PlaylistEntry>, main: usize },
     PlaylistFailed { id: u64, error: String },
+
+    /// Spotify track metadata + optional matched media URL.
+    SpotifyResolved {
+        id: u64,
+        meta: crate::backend::spotify::SpotifyMeta,
+        resolved_url: Option<String>,
+        thumb: Option<Thumb>,
+    },
+    SpotifyFailed { id: u64, title: String, error: String },
 }
 
 /// Progress and log spam may be dropped under backpressure; state changes never are,

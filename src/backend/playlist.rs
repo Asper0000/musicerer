@@ -27,6 +27,8 @@ pub struct PlaylistEntry {
     pub url: String,
     pub title: String,
     pub thumb_url: Option<String>,
+    /// Set for Spotify playlist/album tracks: Spotify owns title, artist and cover.
+    pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
 }
 
 struct Playlist {
@@ -54,6 +56,7 @@ pub fn is_playlist_url(url: &str, source: Source) -> bool {
                 .position(|s| *s == "sets")
                 .is_some_and(|i| i + 1 < segments.len())
         }
+        Source::Spotify => false, // handled by backend::spotify
         Source::Unsupported => false,
     }
 }
@@ -149,7 +152,7 @@ fn parse_entry(entry: &Value) -> Option<PlaylistEntry> {
         _ => pick_thumbnail(entry),
     };
 
-    Some(PlaylistEntry { url, title: title.to_string(), thumb_url })
+    Some(PlaylistEntry { url, title: title.to_string(), thumb_url, spotify: None })
 }
 
 /// Smallest image that is still at least 120px wide; otherwise whatever is last.

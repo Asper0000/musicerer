@@ -27,8 +27,26 @@ struct DownloadCtx {
     fragments: usize,
 }
 
+
+fn kill_process_tree(child: &mut std::process::Child) {
+    let id = child.id();
+    let _ = child.kill();
+    #[cfg(target_os = "windows")]
+    {
+        // yt-dlp spawns ffmpeg / deno; kill the whole tree.
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &id.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = id;
+    }
+}
 pub fn spawn_worker(
-    items: Vec<(u64, String)>,
+    items: Vec<(u64, String, Option<crate::backend::spotify::SpotifyMeta>, Option<String>)>,
     output_dir: PathBuf,
     cookies: Option<PathBuf>,
     inbox: Inbox,
@@ -40,7 +58,7 @@ pub fn spawn_worker(
 }
 
 fn run_queue(
-    items: Vec<(u64, String)>,
+    items: Vec<(u64, String, Option<crate::backend::spotify::SpotifyMeta>, Option<String>)>,
     output_dir: PathBuf,
     cookies: Option<PathBuf>,
     inbox: Inbox,
@@ -68,7 +86,12 @@ fn run_queue(
     let jobs = items
         .into_iter()
         .enumerate()
-        .map(|(i, (id, url))| Job::new(id, url, format!("{}/{}", i + 1, total)))
+        .map(|(i, (id, url, spotify, folder))| {
+            let mut job = Job::new(id, url, format!("{}/{}", i + 1, total));
+            job.spotify = spotify;
+            job.folder = folder;
+            job
+        })
         .collect();
 
     let tally = scheduler::run_all(
@@ -151,6 +174,10 @@ fn is_http_403(error_text: &str) -> bool {
 fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     let fin = Outcome::Finished;
     let url = job.url.as_str();
+    if url.starts_with("spotify:") {
+        tlog(ctx, job, LogLevel::Error, "Spotify track was not resolved to a media URL.");
+        return fin(TrackResult::Error);
+    }
     let source = detect_source(url);
 
     let temp = match tempfile::Builder::new()
@@ -194,6 +221,10 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         Source::SoundCloud => {
             cmd.arg("--format").arg("bestaudio[ext=m4a]/bestaudio/best");
         }
+        Source::Spotify => {
+            tlog(ctx, job, LogLevel::Error, "Spotify URL reached download without resolution.");
+            return fin(TrackResult::Error);
+        }
         Source::Unsupported => {
             tlog(ctx, job, LogLevel::Error, "Unsupported URL.");
             return fin(TrackResult::Error);
@@ -224,7 +255,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     for line in reader.lines().map_while(Result::ok) {
         if ctx.stop_flag.load(Ordering::Relaxed) {
             was_stopped = true;
-            let _ = child.kill();
+            kill_process_tree(&mut child);
             break;
         }
 
@@ -311,9 +342,35 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         }
     }
 
-    let title = tagging::tag_audio(&audio_path, url, &ctx.inbox, job.id, &job.label);
+    let title = tagging::tag_audio(
+        &audio_path,
+        url,
+        &ctx.inbox,
+        job.id,
+        &job.label,
+        job.spotify.as_ref(),
+    );
 
-    match utils::move_into_dir(&audio_path, &ctx.output_dir, &utils::sanitize_filename(&title)) {
+    let dest_dir = match job.folder.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => {
+            let dir = ctx.output_dir.join(utils::sanitize_filename(name));
+            match fs::create_dir_all(&dir) {
+                Ok(()) => dir,
+                Err(err) => {
+                    tlog(
+                        ctx,
+                        job,
+                        LogLevel::Warn,
+                        format!("Cannot create playlist folder: {err}; saving to the output folder."),
+                    );
+                    ctx.output_dir.clone()
+                }
+            }
+        }
+        None => ctx.output_dir.clone(),
+    };
+
+    match utils::move_into_dir(&audio_path, &dest_dir, &utils::sanitize_filename(&title)) {
         Ok(final_path) => {
             tlog(ctx, job, LogLevel::Info, format!("Saved: {}", final_path.display()));
             fin(TrackResult::Ok)

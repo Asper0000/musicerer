@@ -1,0 +1,415 @@
+//! Adaptive parallel job runner.
+//!
+//! Downloads are mostly network-bound, but every finished track also spawns ffmpeg
+//! and image work, so the worker count is derived from the CPU and capped. If the
+//! remote side starts rate-limiting us (HTTP 429 etc.) the allowed concurrency is
+//! halved, the job is retried after a back-off, and the limit creeps back up once
+//! things are healthy again.
+
+use super::TrackResult;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, MutexGuard};
+use std::thread;
+use std::time::{Duration, Instant};
+
+pub const MAX_WORKERS: usize = 6;
+pub const MAX_RETRIES: u8 = 2;
+
+const GROW_AFTER_SUCCESSES: usize = 3;
+const THROTTLE_COOLDOWN: Duration = Duration::from_secs(10);
+#[cfg(not(test))]
+const BACKOFF_STEP: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const BACKOFF_STEP: Duration = Duration::from_millis(10);
+const IDLE_POLL: Duration = Duration::from_millis(250);
+
+/// How many downloads to run at once on this machine.
+pub fn auto_worker_count() -> usize {
+    thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(2, MAX_WORKERS)
+}
+
+#[derive(Debug, Clone)]
+pub struct Job {
+    pub id: u64,
+    pub url: String,
+    /// Short human label such as `3/12`, used to tell interleaved log lines apart.
+    pub label: String,
+    pub attempts: u8,
+    pub fallback_attempt: u8,
+    pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
+}
+
+impl Job {
+    pub fn new(id: u64, url: String, label: String) -> Self {
+        Self { id, url, label, attempts: 0, fallback_attempt: 0, spotify: None }
+    }
+
+    pub fn can_retry(&self) -> bool {
+        self.attempts < MAX_RETRIES
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Finished(TrackResult),
+    /// The server pushed back; the scheduler slows down and retries the job.
+    RateLimited,
+    /// Retry the same item once using a different YouTube player client.
+    RetryWithFallback,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tally {
+    pub succeeded: usize,
+    pub failed: usize,
+    pub unavailable: usize,
+    pub drm: usize,
+    pub stopped: bool,
+}
+
+impl Tally {
+    fn record(&mut self, result: TrackResult) {
+        match result {
+            TrackResult::Ok => self.succeeded += 1,
+            TrackResult::Drm => self.drm += 1,
+            TrackResult::Unavailable => self.unavailable += 1,
+            TrackResult::Error => self.failed += 1,
+            TrackResult::Stopped => self.stopped = true,
+        }
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Additive-increase / multiplicative-decrease concurrency limit.
+struct AdaptiveLimit {
+    max: usize,
+    current: AtomicUsize,
+    streak: AtomicUsize,
+    last_cut: Mutex<Option<Instant>>,
+}
+
+impl AdaptiveLimit {
+    fn new(max: usize) -> Self {
+        Self {
+            max,
+            current: AtomicUsize::new(max),
+            streak: AtomicUsize::new(0),
+            last_cut: Mutex::new(None),
+        }
+    }
+
+    fn current(&self) -> usize {
+        self.current.load(Ordering::Relaxed)
+    }
+
+    fn on_success(&self) {
+        let streak = self.streak.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak < GROW_AFTER_SUCCESSES {
+            return;
+        }
+
+        // Consume one success streak atomically; multiple workers may finish together.
+        let consumed = self
+            .streak
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                if count >= GROW_AFTER_SUCCESSES {
+                    Some(count - GROW_AFTER_SUCCESSES)
+                } else {
+                    None
+                }
+            })
+            .is_ok();
+        if consumed {
+            let _ = self.current.try_update(
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+                |current| (current < self.max).then_some(current + 1),
+            );
+        }
+    }
+
+    /// Halves the limit (never below 1). A burst of simultaneous 429s counts as one
+    /// event: further cuts are ignored for a short cooldown. Returns the new limit
+    /// only if it actually changed.
+    fn on_rate_limited(&self) -> Option<usize> {
+        self.streak.store(0, Ordering::Relaxed);
+        let mut last = lock(&self.last_cut);
+        if last.is_some_and(|t| t.elapsed() < THROTTLE_COOLDOWN) {
+            return None;
+        }
+        *last = Some(Instant::now());
+        let cur = self.current();
+        let next = (cur / 2).max(1);
+        self.current.store(next, Ordering::Relaxed);
+        (next != cur).then_some(next)
+    }
+}
+
+struct State {
+    queue: VecDeque<Job>,
+    active: usize,
+}
+
+struct Shared {
+    state: Mutex<State>,
+    wake: Condvar,
+    limit: AdaptiveLimit,
+    tally: Mutex<Tally>,
+}
+
+/// Runs every job on up to `workers` threads and blocks until all are finished
+/// (or the stop flag drains the queue). `run` does the actual work; `notify`
+/// receives human-readable notes about scheduling decisions.
+pub fn run_all<F, N>(
+    jobs: Vec<Job>,
+    workers: usize,
+    stop: &AtomicBool,
+    notify: N,
+    run: F,
+) -> Tally
+where
+    F: Fn(&Job) -> Outcome + Sync,
+    N: Fn(String) + Sync,
+{
+    let threads = workers.clamp(1, MAX_WORKERS).min(jobs.len().max(1));
+    let shared = Shared {
+        state: Mutex::new(State { queue: jobs.into(), active: 0 }),
+        wake: Condvar::new(),
+        limit: AdaptiveLimit::new(threads),
+        tally: Mutex::new(Tally::default()),
+    };
+
+    thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| worker(&shared, stop, &notify, &run));
+        }
+    });
+
+    let mut tally = *lock(&shared.tally);
+    if stop.load(Ordering::Relaxed) {
+        tally.stopped = true;
+    }
+    tally
+}
+
+fn worker<F, N>(shared: &Shared, stop: &AtomicBool, notify: &N, run: &F)
+where
+    F: Fn(&Job) -> Outcome,
+    N: Fn(String),
+{
+    while let Some(mut job) = next_job(shared, stop) {
+        let mut retry = false;
+
+        match run(&job) {
+            Outcome::Finished(result) => {
+                lock(&shared.tally).record(result);
+                if result == TrackResult::Ok {
+                    shared.limit.on_success();
+                }
+            }
+            Outcome::RateLimited if job.can_retry() => {
+                if let Some(limit) = shared.limit.on_rate_limited() {
+                    notify(format!("Server is rate-limiting us; reducing to {limit} parallel download(s)."));
+                }
+                job.attempts += 1;
+                retry = true;
+                // Sleep while still holding our slot so nobody grabs the retry instantly.
+                sleep_unless_stopped(BACKOFF_STEP * u32::from(job.attempts), stop);
+            }
+            Outcome::RateLimited => lock(&shared.tally).record(TrackResult::Error),
+            Outcome::RetryWithFallback if job.can_retry() => {
+                job.attempts += 1;
+                job.fallback_attempt += 1;
+                retry = true;
+                notify("Retrying a YouTube download with an alternate player client.".to_string());
+                sleep_unless_stopped(BACKOFF_STEP * u32::from(job.attempts), stop);
+            }
+            Outcome::RetryWithFallback => lock(&shared.tally).record(TrackResult::Error),
+        }
+
+        let mut state = lock(&shared.state);
+        state.active -= 1;
+        if retry && !stop.load(Ordering::Relaxed) {
+            state.queue.push_front(job);
+        }
+        drop(state);
+        shared.wake.notify_all();
+    }
+}
+
+/// Blocks until a job may start, or returns `None` once nothing is left to do.
+fn next_job(shared: &Shared, stop: &AtomicBool) -> Option<Job> {
+    let mut state = lock(&shared.state);
+    loop {
+        if stop.load(Ordering::Relaxed) {
+            state.queue.clear();
+        }
+        if state.active < shared.limit.current() {
+            if let Some(job) = state.queue.pop_front() {
+                state.active += 1;
+                return Some(job);
+            }
+        }
+        // A running job may still push a retry, so only quit when fully idle.
+        if state.queue.is_empty() && state.active == 0 {
+            return None;
+        }
+        state = shared
+            .wake
+            .wait_timeout(state, IDLE_POLL)
+            .unwrap_or_else(|e| e.into_inner())
+            .0;
+    }
+}
+
+fn sleep_unless_stopped(total: Duration, stop: &AtomicBool) {
+    let end = Instant::now() + total;
+    while Instant::now() < end && !stop.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Arc;
+
+    fn jobs(n: u64) -> Vec<Job> {
+        (0..n).map(|i| Job::new(i, format!("u{i}"), format!("{}/{n}", i + 1))).collect()
+    }
+
+    #[test]
+    fn runs_in_parallel_but_never_exceeds_worker_count() {
+        let running = AtomicU32::new(0);
+        let peak = AtomicU32::new(0);
+        let stop = AtomicBool::new(false);
+
+        let tally = run_all(jobs(12), 4, &stop, |_| {}, |_| {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(60));
+            running.fetch_sub(1, Ordering::SeqCst);
+            Outcome::Finished(TrackResult::Ok)
+        });
+
+        assert_eq!(tally.succeeded, 12);
+        let peak = peak.load(Ordering::SeqCst);
+        assert!(peak > 1, "expected real parallelism, peak was {peak}");
+        assert!(peak <= 4, "limit exceeded, peak was {peak}");
+    }
+
+    #[test]
+    fn never_spawns_more_threads_than_jobs() {
+        let stop = AtomicBool::new(false);
+        let tally = run_all(jobs(1), 6, &stop, |_| {}, |_| Outcome::Finished(TrackResult::Ok));
+        assert_eq!(tally.succeeded, 1);
+    }
+
+    #[test]
+    fn tallies_each_result_kind() {
+        let stop = AtomicBool::new(false);
+        let tally = run_all(jobs(5), 2, &stop, |_| {}, |job| {
+            Outcome::Finished(match job.id {
+                0 => TrackResult::Ok,
+                1 => TrackResult::Error,
+                2 => TrackResult::Drm,
+                3 => TrackResult::Unavailable,
+                _ => TrackResult::Ok,
+            })
+        });
+        assert_eq!((tally.succeeded, tally.failed, tally.unavailable, tally.drm), (2, 1, 1, 1));
+        assert!(!tally.stopped);
+    }
+
+    #[test]
+    fn rate_limit_halves_concurrency_and_retries_the_job() {
+        let stop = AtomicBool::new(false);
+        let notes = Mutex::new(Vec::new());
+        let calls = AtomicU32::new(0);
+
+        let tally = run_all(jobs(1), 1, &stop, |n| lock(&notes).push(n), |job| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            if job.attempts == 0 { Outcome::RateLimited } else { Outcome::Finished(TrackResult::Ok) }
+        });
+
+        assert_eq!(tally.succeeded, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "job should run twice");
+    }
+
+    #[test]
+    fn rate_limit_cut_is_floor_one_and_cooldown_debounced() {
+        let limit = AdaptiveLimit::new(6);
+        assert_eq!(limit.on_rate_limited(), Some(3));
+        assert_eq!(limit.on_rate_limited(), None, "burst must count once");
+        assert_eq!(limit.current(), 3);
+
+        let one = AdaptiveLimit::new(1);
+        assert_eq!(one.on_rate_limited(), None);
+        assert_eq!(one.current(), 1);
+    }
+
+    #[test]
+    fn limit_recovers_after_a_streak_of_successes() {
+        let limit = AdaptiveLimit::new(4);
+        limit.on_rate_limited();
+        assert_eq!(limit.current(), 2);
+        for _ in 0..GROW_AFTER_SUCCESSES { limit.on_success(); }
+        assert_eq!(limit.current(), 3);
+        for _ in 0..GROW_AFTER_SUCCESSES * 3 { limit.on_success(); }
+        assert_eq!(limit.current(), 4, "must not grow past the max");
+    }
+
+    #[test]
+    fn concurrent_successes_never_raise_limit_above_maximum() {
+        let limit = Arc::new(AdaptiveLimit::new(4));
+        limit.on_rate_limited();
+
+        thread::scope(|scope| {
+            for _ in 0..8 {
+                let limit = Arc::clone(&limit);
+                scope.spawn(move || {
+                    for _ in 0..100 {
+                        limit.on_success();
+                    }
+                });
+            }
+        });
+
+        assert!(limit.current() <= 4);
+    }
+
+    #[test]
+    fn retries_are_bounded() {
+        let stop = AtomicBool::new(false);
+        let calls = AtomicU32::new(0);
+        let tally = run_all(jobs(1), 1, &stop, |_| {}, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Outcome::RateLimited
+        });
+        assert_eq!(tally.failed, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), u32::from(MAX_RETRIES) + 1);
+    }
+
+    #[test]
+    fn stop_drains_the_queue() {
+        let stop = AtomicBool::new(false);
+        let started = AtomicU32::new(0);
+        let tally = run_all(jobs(20), 2, &stop, |_| {}, |_| {
+            if started.fetch_add(1, Ordering::SeqCst) == 1 {
+                stop.store(true, Ordering::SeqCst);
+            }
+            thread::sleep(Duration::from_millis(30));
+            Outcome::Finished(TrackResult::Ok)
+        });
+        assert!(tally.stopped);
+        assert!(started.load(Ordering::SeqCst) < 20, "queued jobs must not start after stop");
+    }
+}

@@ -40,13 +40,24 @@ impl App {
                 self.refresh_download_status();
             }
             WorkerEvent::TrackTitle { id, title } => {
-                if let Some(i) = self.find_item_mut(id) { i.display_name = title; }
+                if let Some(i) = self.find_item_mut(id) {
+                    // Keep the clean Spotify title when we have one.
+                    if i.spotify.is_none() {
+                        i.display_name = title;
+                    }
+                }
             }
             WorkerEvent::Progress { id, value } => {
                 if let Some(i) = self.find_item_mut(id) { i.progress = value; }
             }
             WorkerEvent::Thumbnail { id, thumb } => {
-                if let Some(i) = self.find_item_mut(id) { i.thumbnail = thumb_state(thumb); }
+                if let Some(i) = self.find_item_mut(id) {
+                    let keep_spotify = i.spotify.is_some()
+                        && matches!(i.thumbnail, crate::ui::ThumbState::Ready(_));
+                    if !keep_spotify {
+                        i.thumbnail = thumb_state(thumb);
+                    }
+                }
             }
             WorkerEvent::Log { level, text } => {
                 let lvl = match level {
@@ -132,6 +143,41 @@ impl App {
                     spawn_preview(id, i.url.clone(), cookies, inbox);
                 }
             }
+            WorkerEvent::SpotifyResolved { id, meta, resolved_url, thumb } => {
+                if let Some(item) = self.queue.iter_mut().find(|i| i.id == id) {
+                    item.spotify = Some(meta.clone());
+                    item.resolved_url = resolved_url.clone();
+                    if let Some(ref u) = resolved_url { item.url = u.clone(); }
+                    item.display_name = meta.display_title();
+                    item.resolving = false;
+                    if let Some((w, h, rgba)) = thumb { item.thumbnail = crate::ui::ThumbState::Ready(iced::widget::image::Handle::from_rgba(w, h, rgba)); }
+                }
+                if let Some(i) = self.find_item_mut(id) {
+                    i.resolving = false;
+                    i.display_name = meta.display_title();
+                    i.spotify = Some(meta);
+                    i.resolved_url = resolved_url;
+                    if i.resolved_url.is_none() {
+                        i.status = ItemStatus::Failed;
+                    }
+                }
+            }
+            WorkerEvent::SpotifyFailed { id, title, error } => {
+                if let Some(i) = self.find_item_mut(id) {
+                    i.resolving = false;
+                    i.status = ItemStatus::Failed;
+                    i.thumbnail = ThumbState::Failed;
+                    if !title.is_empty() {
+                        i.display_name = title.clone();
+                    }
+                }
+                self.push_log(
+                    UiLogLevel::Error,
+                    format!("Spotify resolve failed for \"{title}\": {error}"),
+                );
+                self.show_log = true;
+                self.log_attention = 16;
+            }
         }
     }
 
@@ -170,8 +216,9 @@ impl App {
         for entry in entries {
             let child_id = self.next_id;
             self.next_id += 1;
-            let source = detect_source(&entry.url);
-            let needs_track_preview = source == Source::SoundCloud
+            let is_spotify = entry.spotify.is_some();
+            let source = if is_spotify { Source::Spotify } else { detect_source(&entry.url) };
+            let needs_track_preview = !is_spotify && source == Source::SoundCloud
                 && (!usable_track_title(&entry.title)
                     || entry.thumb_url.as_deref().map_or(true, is_artist_avatar_thumb));
 
@@ -186,6 +233,14 @@ impl App {
                 source,
                 child_title,
             );
+            if let Some(sp) = entry.spotify.clone() {
+                if entry.url.starts_with("spotify:") {
+                    child.status = ItemStatus::Failed;
+                } else {
+                    child.resolved_url = Some(entry.url.clone());
+                }
+                child.spotify = Some(sp);
+            }
 
             if needs_track_preview {
                 child.thumbnail = ThumbState::Loading;
@@ -201,9 +256,21 @@ impl App {
         let total = children.len() + 1;
 
         if let Some(item) = self.find_item_mut(id) {
-            item.source = detect_source(&main_entry.url);
+            if let Some(sp) = main_entry.spotify.clone() {
+                item.source = Source::Spotify;
+                if main_entry.url.starts_with("spotify:") {
+                    item.resolved_url = None;
+                    item.status = ItemStatus::Failed;
+                } else {
+                    item.resolved_url = Some(main_entry.url.clone());
+                }
+                item.spotify = Some(sp);
+            } else {
+                item.source = detect_source(&main_entry.url);
+            }
             item.url = main_entry.url;
             item.display_name = main_title;
+            item.playlist_title = Some(title.to_string());
             item.resolving = false;
             item.thumbnail = if is_soundcloud_playlist || main_entry.thumb_url.is_some() {
                 ThumbState::Loading

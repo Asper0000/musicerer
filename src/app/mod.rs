@@ -20,6 +20,9 @@ use std::time::Duration;
 struct AppConfig {
     output_dir: Option<String>,
     cookies_input: Option<String>,
+    spotify_client_id: Option<String>,
+    spotify_client_secret: Option<String>,
+    group_playlists: Option<bool>,
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -47,6 +50,9 @@ pub enum Message {
     CookiesChanged(String),
     BrowseCookies,
     CookiesPicked(Option<PathBuf>),
+    SpotifyClientIdChanged(String),
+    SpotifyClientSecretChanged(String),
+    ToggleGroupPlaylists(bool),
     StartQueue,
     StopQueue,
     SwitchView(View),
@@ -67,12 +73,20 @@ pub struct App {
     pub(crate) output_dir: String,
     pub(crate) available_space: String,
     pub(crate) cookies_input: String,
+    pub(crate) spotify_client_id: String,
+    pub(crate) spotify_client_secret: String,
+    /// Save playlist and album tracks into their own subfolder.
+    pub(crate) group_playlists: bool,
+    /// Animation counter, advanced on every worker poll.
+    pub(crate) tick: u32,
     pub(crate) queue: Vec<QueueItem>,
     pub(crate) logs: VecDeque<LogLine>,
     pub(crate) next_id: u64,
     pub(crate) downloading: bool,
     pub(crate) status: String,
     pub(crate) show_log: bool,
+    /// Frames left to highlight the Log button (set when a user-facing error is logged).
+    pub(crate) log_attention: u8,
     pub(crate) show_platforms: bool,
     pub(crate) startup_vpn_warning: Option<VpnInfo>,
     pub(crate) inbox: Arc<Mutex<Vec<crate::backend::WorkerEvent>>>,
@@ -94,6 +108,9 @@ impl App {
 
         let output_dir = cfg.output_dir.unwrap_or(default_output);
         let cookies_input = cfg.cookies_input.unwrap_or_default();
+        let spotify_client_id = cfg.spotify_client_id.unwrap_or_default();
+        let spotify_client_secret = cfg.spotify_client_secret.unwrap_or_default();
+        let group_playlists = cfg.group_playlists.unwrap_or(true);
 
         let mut app = Self {
             current_view: View::Downloads,
@@ -101,12 +118,17 @@ impl App {
             output_dir,
             available_space: String::new(),
             cookies_input,
+            spotify_client_id,
+            spotify_client_secret,
+            group_playlists,
+            tick: 0,
             queue: Vec::new(),
             logs: VecDeque::new(),
             next_id: 1,
             downloading: false,
             status: "Ready".to_string(),
             show_log: false,
+            log_attention: 0,
             show_platforms: false,
             startup_vpn_warning,
             inbox: Arc::new(Mutex::new(Vec::new())),
@@ -153,6 +175,19 @@ impl App {
         if s.is_empty() { None } else { Some(PathBuf::from(s)) }
     }
 
+    pub(crate) fn spotify_creds(&self) -> Option<crate::backend::spotify::auth::Credentials> {
+        let id = self.spotify_client_id.trim();
+        let secret = self.spotify_client_secret.trim();
+        if id.is_empty() || secret.is_empty() {
+            None
+        } else {
+            Some(crate::backend::spotify::auth::Credentials {
+                client_id: id.to_string(),
+                client_secret: secret.to_string(),
+            })
+        }
+    }
+
     fn save_config(&self) {
         if let Some(path) = config_path() {
             if let Some(parent) = path.parent() {
@@ -161,6 +196,9 @@ impl App {
             let cfg = AppConfig {
                 output_dir: Some(self.output_dir.clone()),
                 cookies_input: Some(self.cookies_input.clone()),
+                spotify_client_id: Some(self.spotify_client_id.clone()),
+                spotify_client_secret: Some(self.spotify_client_secret.clone()),
+                group_playlists: Some(self.group_playlists),
             };
             if let Ok(json) = serde_json::to_string_pretty(&cfg) {
                 let _ = std::fs::write(path, json);

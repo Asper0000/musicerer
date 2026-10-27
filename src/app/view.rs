@@ -187,10 +187,20 @@ impl App {
             .height(Length::Fixed(48.0))
             .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.93, 0.20, 0.20)) });
 
+        let sp_icon = svg(svg::Handle::from_memory(crate::ui::icons::ICON_SRC_SPOTIFY))
+
+            .width(Length::Fixed(48.0))
+
+            .height(Length::Fixed(48.0))
+
+            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.114, 0.725, 0.329)) });
+
         let platforms_row = row![
             column![sc_icon, Space::new().height(8), text("SoundCloud").size(12)].align_x(Alignment::Center),
             Space::new().width(40),
             column![yt_icon, Space::new().height(8), text("YouTube").size(12)].align_x(Alignment::Center),
+            Space::new().width(40),
+            column![sp_icon, Space::new().height(8), text("Spotify").size(12)].align_x(Alignment::Center),
         ].align_y(Alignment::Center);
 
         let card = container(
@@ -457,7 +467,7 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    queue_group(i, item, self.downloading, Message::RemoveTrack, Message::ToggleGroup)
+                    queue_group(i, item, self.downloading, Message::RemoveTrack, Message::ToggleGroup, self.tick)
                 })
                 .collect()
         };
@@ -491,12 +501,15 @@ impl App {
             .style(t::secondary_button)
             .padding([8, 14]);
 
-        let log_toggle = button(
-            text(if self.show_log { "Hide Log" } else { "Show Log" }).size(13),
-        )
-        .on_press(Message::ToggleLog)
-        .style(t::secondary_button)
-        .padding([8, 12]);
+        let log_toggle = {
+            let label = text(if self.show_log { "Hide Log" } else { "Show Log" }).size(13);
+            let btn = button(label).on_press(Message::ToggleLog).padding([8, 12]);
+            if self.log_attention > 0 {
+                btn.style(t::primary_button)
+            } else {
+                btn.style(t::secondary_button)
+            }
+        };
 
         let controls = row![
             download_all,
@@ -519,7 +532,9 @@ impl App {
         content = content.push(url_card);
         content = content.push(queue_card);
         content = content.push(controls);
-        content = content.push(progress);
+        if self.downloading {
+            content = content.push(progress);
+        }
 
         if self.show_log {
             content = content.push(self.view_log_panel());
@@ -617,8 +632,47 @@ impl App {
         ]
         .spacing(3);
 
+
+        let group_on = self.group_playlists;
+        let group_btn = button(
+            text(if group_on { "Enabled" } else { "Disabled" })
+                .size(13)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+        )
+        .on_press(Message::ToggleGroupPlaylists(!group_on))
+        .width(Length::Fixed(90.0))
+        .padding([8, 14]);
+        let group_btn = if group_on {
+            group_btn.style(t::primary_button)
+        } else {
+            group_btn.style(t::secondary_button)
+        };
+
+        let group_section = row![
+            column![
+                text("Playlist folders").size(13),
+                text("Save playlist and album tracks into their own subfolder of the output folder.")
+                    .size(11)
+                    .style(t::muted_text),
+            ]
+            .spacing(3)
+            .width(Length::Fill),
+            group_btn,
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
+
         let settings_card = container(
-            column![output_section, Space::new().height(12), cookies_section].spacing(3),
+            column![
+                output_section,
+                Space::new().height(12),
+                cookies_section,
+                Space::new().height(12),
+                group_section,
+                Space::new().height(12),
+            ]
+            .spacing(3),
         )
         .style(t::card)
         .padding(14)
@@ -627,7 +681,7 @@ impl App {
         column![
             header,
             Space::new().height(6),
-            settings_card,
+            scrollable(settings_card).height(Length::Fill),
         ]
         .spacing(6)
         .width(Length::Fill)

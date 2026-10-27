@@ -40,11 +40,14 @@ pub struct Job {
     pub label: String,
     pub attempts: u8,
     pub fallback_attempt: u8,
+    pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
+    /// Subfolder of the output folder this track is saved into (playlist name).
+    pub folder: Option<String>,
 }
 
 impl Job {
     pub fn new(id: u64, url: String, label: String) -> Self {
-        Self { id, url, label, attempts: 0, fallback_attempt: 0 }
+        Self { id, url, label, attempts: 0, fallback_attempt: 0, spotify: None, folder: None }
     }
 
     pub fn can_retry(&self) -> bool {

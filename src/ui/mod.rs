@@ -51,6 +51,12 @@ pub struct QueueItem {
     /// A playlist URL that is still being expanded into tracks.
     pub resolving: bool,
     pub group: Option<PlaylistGroup>,
+    /// For Spotify items: the matched YouTube/SoundCloud URL used for download.
+    pub resolved_url: Option<String>,
+    /// Spotify-sourced tags/cover written into the final .m4a.
+    pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
+    /// Title of the playlist/album this row represents; names the output subfolder.
+    pub playlist_title: Option<String>,
 }
 
 impl QueueItem {
@@ -65,6 +71,9 @@ impl QueueItem {
             thumbnail: ThumbState::Loading,
             resolving: false,
             group: None,
+            resolved_url: None,
+            spotify: None,
+            playlist_title: None,
         }
     }
 

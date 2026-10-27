@@ -15,6 +15,7 @@ pub fn guess_name_from_url(url: &str, source: Source) -> String {
             "SoundCloud track".to_string()
         }
         Source::YouTube => FETCHING_TITLE.to_string(),
+        Source::Spotify => FETCHING_TITLE.to_string(),
         Source::Unsupported => url.to_string(),
     }
 }
