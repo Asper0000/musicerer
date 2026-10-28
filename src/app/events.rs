@@ -1,7 +1,8 @@
 //! Applies events posted by the background workers to the queue.
 
-use super::helpers::{guess_name_from_url, FETCHING_TITLE};
+use super::helpers::{fallback_name, FETCHING_TITLE};
 use super::App;
+use crate::backend::spotify::PUBLIC_PAGE_LIMIT;
 use crate::backend::{
     detect_source, spawn_preview, spawn_previews, spawn_thumbnails, LogLevel, PlaylistEntry,
     Source, Thumb, TrackResult, WorkerEvent,
@@ -41,135 +42,200 @@ impl App {
             }
             WorkerEvent::TrackTitle { id, title } => {
                 if let Some(i) = self.find_item_mut(id) {
-                    // Keep the clean Spotify title when we have one.
+                    // Spotify rows keep their clean Spotify title.
                     if i.spotify.is_none() {
                         i.display_name = title;
                     }
                 }
             }
             WorkerEvent::Progress { id, value } => {
-                if let Some(i) = self.find_item_mut(id) { i.progress = value; }
+                if let Some(i) = self.find_item_mut(id) {
+                    i.progress = value;
+                }
             }
             WorkerEvent::Thumbnail { id, thumb } => {
                 if let Some(i) = self.find_item_mut(id) {
-                    let keep_spotify = i.spotify.is_some()
-                        && matches!(i.thumbnail, crate::ui::ThumbState::Ready(_));
-                    if !keep_spotify {
+                    let keep_spotify_cover =
+                        i.spotify.is_some() && matches!(i.thumbnail, ThumbState::Ready(_));
+                    if !keep_spotify_cover {
                         i.thumbnail = thumb_state(thumb);
                     }
                 }
             }
             WorkerEvent::Log { level, text } => {
-                let lvl = match level {
+                let level = match level {
                     LogLevel::Info => UiLogLevel::Info,
                     LogLevel::Warn => UiLogLevel::Warn,
                     LogLevel::Error => UiLogLevel::Error,
                 };
-                self.push_log(lvl, text);
+                self.push_log(level, text);
             }
             WorkerEvent::TrackFinished { id, result } => {
                 if let Some(i) = self.find_item_mut(id) {
                     i.status = match result {
-                        TrackResult::Ok => { i.progress = 1.0; ItemStatus::Done }
+                        TrackResult::Ok => {
+                            i.progress = 1.0;
+                            ItemStatus::Done
+                        }
                         TrackResult::Drm => ItemStatus::DrmSkipped,
                         TrackResult::Unavailable => ItemStatus::Unavailable,
                         TrackResult::Error => ItemStatus::Failed,
+                        TrackResult::Skipped => {
+                            i.progress = 1.0;
+                            ItemStatus::Skipped
+                        }
                         TrackResult::Stopped => ItemStatus::Stopped,
                     };
                 }
                 self.refresh_download_status();
             }
-            WorkerEvent::QueueFinished { succeeded, failed, unavailable, drm, stopped } => {
+            WorkerEvent::QueueFinished {
+                succeeded,
+                failed,
+                unavailable,
+                drm,
+                skipped,
+                stopped,
+            } => {
                 self.downloading = false;
                 let verb = if stopped { "Stopped" } else { "Done" };
                 self.status = format!(
-                    "{verb} \u{2014} {succeeded} succeeded, {failed} failed, {unavailable} unavailable, {drm} DRM-skipped"
+                    "{verb} \u{2014} {succeeded} succeeded, {failed} failed, {unavailable} unavailable, {drm} DRM-skipped, {skipped} skipped"
                 );
                 self.push_log(UiLogLevel::Info, self.status.clone());
                 self.update_disk_space();
             }
             WorkerEvent::PreviewReady { id, title, thumb } => {
-                if let Some(i) = self.find_item_mut(id) {
-                    if usable_track_title(&title) {
-                        i.display_name = title.trim().to_string();
-                    } else if i.display_name == FETCHING_TITLE {
-                        // Do not let an incomplete info JSON replace a useful track
-                        // title with the literal placeholder "Untitled".
-                        let fallback = guess_name_from_url(&i.url, i.source);
-                        i.display_name = if fallback != FETCHING_TITLE && !fallback.trim().is_empty() {
-                            fallback
-                        } else if i.source == Source::YouTube {
-                            "Unknown video".to_string()
-                        } else {
-                            "Unknown track".to_string()
-                        };
+                let Some(i) = self.find_item_mut(id) else {
+                    return;
+                };
+                if i.spotify.is_some() {
+                    return;
+                }
+                if usable_track_title(&title) {
+                    i.display_name = title.trim().to_string();
+                } else if i.display_name == FETCHING_TITLE {
+                    // Do not let an incomplete info JSON replace a useful track title
+                    // with the literal placeholder "Untitled".
+                    i.display_name = fallback_name(&i.url, i.source);
+                }
+                match thumb {
+                    Some(thumb) => i.thumbnail = thumb_state(Some(thumb)),
+                    None if matches!(i.thumbnail, ThumbState::Loading) => {
+                        i.thumbnail = ThumbState::Failed
                     }
-
-                    if let Some(thumb) = thumb {
-                        i.thumbnail = thumb_state(Some(thumb));
-                    } else if matches!(&i.thumbnail, ThumbState::Loading) {
-                        i.thumbnail = ThumbState::Failed;
-                    }
+                    None => {}
                 }
             }
             WorkerEvent::PreviewFailed { id, error } => {
                 if let Some(i) = self.find_item_mut(id) {
                     i.thumbnail = ThumbState::Failed;
                     if i.display_name == FETCHING_TITLE {
-                        let fallback = guess_name_from_url(&i.url, i.source);
-                        i.display_name = if fallback != FETCHING_TITLE && !fallback.trim().is_empty() {
-                            fallback
-                        } else if i.source == Source::YouTube {
-                            "Unknown video".to_string()
-                        } else {
-                            "Unknown track".to_string()
-                        };
+                        i.display_name = fallback_name(&i.url, i.source);
                     }
                 }
                 self.push_log(UiLogLevel::Warn, format!("Preview failed: {error}"));
             }
-            WorkerEvent::PlaylistResolved { id, title, entries, main } => {
+            WorkerEvent::PlaylistResolved {
+                id,
+                title,
+                entries,
+                main,
+            } => {
                 self.apply_playlist(id, &title, entries, main);
             }
             WorkerEvent::PlaylistFailed { id, error } => {
+                let cookies = self.cookies_path();
+                let inbox = self.inbox.clone();
+                let cancel = self.resolve_cancel.clone();
+                let Some(i) = self.find_item_mut(id) else {
+                    return;
+                };
+                if !i.resolving {
+                    return;
+                } // stopped while loading
+                i.resolving = false;
+                spawn_preview(id, i.url.clone(), cookies, inbox, cancel);
                 self.push_log(
                     UiLogLevel::Warn,
                     format!("Could not read playlist ({error}); adding it as a single track."),
                 );
-                let cookies = self.cookies_path();
-                let inbox = self.inbox.clone();
-                if let Some(i) = self.find_item_mut(id) {
-                    i.resolving = false;
-                    spawn_preview(id, i.url.clone(), cookies, inbox);
+            }
+            WorkerEvent::SpotifyResolved {
+                id,
+                meta,
+                resolved_url,
+                thumb,
+            } => {
+                let Some(i) = self.find_item_mut(id) else {
+                    return;
+                };
+                if !i.resolving {
+                    return;
+                } // stopped while loading
+                i.resolving = false;
+                i.display_name = meta.display_title();
+                // Keep i.url as the original Spotify URL; resolved_url holds the audio.
+                i.resolved_url = resolved_url;
+                i.spotify = Some(meta);
+                if let Some(thumb) = thumb {
+                    i.thumbnail = thumb_state(Some(thumb));
+                } else if matches!(i.thumbnail, ThumbState::Loading) {
+                    i.thumbnail = ThumbState::Failed;
+                }
+                if i.resolved_url.is_none() {
+                    i.status = ItemStatus::Failed;
                 }
             }
-            WorkerEvent::SpotifyResolved { id, meta, resolved_url, thumb } => {
-                if let Some(item) = self.queue.iter_mut().find(|i| i.id == id) {
-                    item.spotify = Some(meta.clone());
-                    item.resolved_url = resolved_url.clone();
-                    if let Some(ref u) = resolved_url { item.url = u.clone(); }
-                    item.display_name = meta.display_title();
-                    item.resolving = false;
-                    if let Some((w, h, rgba)) = thumb { item.thumbnail = crate::ui::ThumbState::Ready(iced::widget::image::Handle::from_rgba(w, h, rgba)); }
+            WorkerEvent::SpotifyTrackMatched {
+                parent_id,
+                entry_index,
+                url,
+            } => {
+                let Some(item) = self.find_item_mut(parent_id) else {
+                    return;
+                };
+                let target = if entry_index == 0 {
+                    Some(item)
+                } else {
+                    item.group
+                        .as_mut()
+                        .and_then(|g| g.children.get_mut(entry_index - 1))
+                };
+                let Some(child) = target else {
+                    return;
+                };
+                if child.status == ItemStatus::Stopped {
+                    return;
                 }
-                if let Some(i) = self.find_item_mut(id) {
-                    i.resolving = false;
-                    i.display_name = meta.display_title();
-                    i.spotify = Some(meta);
-                    i.resolved_url = resolved_url;
-                    if i.resolved_url.is_none() {
-                        i.status = ItemStatus::Failed;
+                match url {
+                    Some(u) => {
+                        child.resolved_url = Some(u);
+                    }
+                    None => {
+                        child.resolved_url = None;
+                        child.status = ItemStatus::Failed;
                     }
                 }
+            }
+            WorkerEvent::SpotifyPlaylistComplete { parent_id } => {
+                if let Some(i) = self.find_item_mut(parent_id) {
+                    i.resolving = false;
+                }
+                self.refresh_download_status();
             }
             WorkerEvent::SpotifyFailed { id, title, error } => {
-                if let Some(i) = self.find_item_mut(id) {
-                    i.resolving = false;
-                    i.status = ItemStatus::Failed;
-                    i.thumbnail = ThumbState::Failed;
-                    if !title.is_empty() {
-                        i.display_name = title.clone();
-                    }
+                let Some(i) = self.find_item_mut(id) else {
+                    return;
+                };
+                if !i.resolving {
+                    return;
+                } // stopped while loading
+                i.resolving = false;
+                i.status = ItemStatus::Failed;
+                i.thumbnail = ThumbState::Failed;
+                if !title.is_empty() {
+                    i.display_name = title.clone();
                 }
                 self.push_log(
                     UiLogLevel::Error,
@@ -183,13 +249,26 @@ impl App {
 
     /// Turns a resolved playlist into its main row plus a dropdown of the remaining tracks.
     /// The row keeps the id it was added with; every other track gets a fresh id.
-    fn apply_playlist(&mut self, id: u64, title: &str, mut entries: Vec<PlaylistEntry>, main: usize) {
-        if entries.is_empty() || !self.queue.iter().any(|q| q.id == id) {
-            return; // the user removed the row while it was loading
+    fn apply_playlist(
+        &mut self,
+        id: u64,
+        title: &str,
+        mut entries: Vec<PlaylistEntry>,
+        main: usize,
+    ) {
+        // The row may have been removed or stopped while it was loading.
+        let Some(playlist_source) = self
+            .find_item_mut(id)
+            .filter(|i| i.resolving)
+            .map(|i| i.source)
+        else {
+            return;
+        };
+        if entries.is_empty() {
+            return;
         }
 
-        let playlist_source = self.find_item_mut(id).map(|item| item.source);
-        let is_soundcloud_playlist = playlist_source == Some(Source::SoundCloud);
+        let is_soundcloud_playlist = playlist_source == Source::SoundCloud;
         let main_entry = entries.remove(main.min(entries.len() - 1));
 
         // SoundCloud's --flat-playlist result is useful for expansion, but its
@@ -197,7 +276,7 @@ impl App {
         // Resolve the actual track URL for the main row instead of displaying the
         // playlist container's title/artwork or trusting incomplete flat metadata.
         let mut preview_jobs = Vec::new();
-        let mut thumb_jobs = Vec::with_capacity(entries.len());
+        let mut thumb_jobs = Vec::with_capacity(entries.len() + 1);
         if is_soundcloud_playlist {
             preview_jobs.push((id, main_entry.url.clone()));
         } else if let Some(url) = &main_entry.thumb_url {
@@ -216,25 +295,32 @@ impl App {
         for entry in entries {
             let child_id = self.next_id;
             self.next_id += 1;
+
             let is_spotify = entry.spotify.is_some();
-            let source = if is_spotify { Source::Spotify } else { detect_source(&entry.url) };
-            let needs_track_preview = !is_spotify && source == Source::SoundCloud
+            let source = if is_spotify {
+                Source::Spotify
+            } else {
+                detect_source(&entry.url)
+            };
+            let needs_track_preview = !is_spotify
+                && source == Source::SoundCloud
                 && (!usable_track_title(&entry.title)
-                    || entry.thumb_url.as_deref().map_or(true, is_artist_avatar_thumb));
+                    || entry
+                        .thumb_url
+                        .as_deref()
+                        .is_none_or(is_artist_avatar_thumb));
 
             let child_title = if needs_track_preview && !usable_track_title(&entry.title) {
                 FETCHING_TITLE.to_string()
             } else {
                 entry.title.clone()
             };
-            let mut child = QueueItem::new(
-                child_id,
-                entry.url.clone(),
-                source,
-                child_title,
-            );
+            let mut child = QueueItem::new(child_id, entry.url.clone(), source, child_title);
+
             if let Some(sp) = entry.spotify.clone() {
-                if entry.url.starts_with("spotify:") {
+                if entry.url.starts_with("spotify:pending") {
+                    // waiting for SpotifyTrackMatched
+                } else if entry.url.starts_with("spotify:") {
                     child.status = ItemStatus::Failed;
                 } else {
                     child.resolved_url = Some(entry.url.clone());
@@ -256,35 +342,61 @@ impl App {
         let total = children.len() + 1;
 
         if let Some(item) = self.find_item_mut(id) {
-            if let Some(sp) = main_entry.spotify.clone() {
-                item.source = Source::Spotify;
-                if main_entry.url.starts_with("spotify:") {
-                    item.resolved_url = None;
-                    item.status = ItemStatus::Failed;
-                } else {
-                    item.resolved_url = Some(main_entry.url.clone());
+            match main_entry.spotify.clone() {
+                Some(sp) => {
+                    item.source = Source::Spotify;
+                    // item.url keeps the original Spotify URL; resolved_url holds the audio.
+                    if main_entry.url.starts_with("spotify:pending") {
+                        item.resolved_url = None;
+                        item.status = ItemStatus::Pending;
+                    } else if main_entry.url.starts_with("spotify:") {
+                        item.resolved_url = None;
+                        item.status = ItemStatus::Failed;
+                    } else {
+                        item.resolved_url = Some(main_entry.url.clone());
+                    }
+                    item.spotify = Some(sp);
                 }
-                item.spotify = Some(sp);
-            } else {
-                item.source = detect_source(&main_entry.url);
+                None => {
+                    item.source = detect_source(&main_entry.url);
+                    item.url = main_entry.url;
+                }
             }
-            item.url = main_entry.url;
             item.display_name = main_title;
             item.playlist_title = Some(title.to_string());
-            item.resolving = false;
+            item.resolving = playlist_source == Source::Spotify;
             item.thumbnail = if is_soundcloud_playlist || main_entry.thumb_url.is_some() {
                 ThumbState::Loading
             } else {
                 ThumbState::Failed
             };
             if !children.is_empty() {
-                item.group = Some(PlaylistGroup { children, expanded: false });
+                item.group = Some(PlaylistGroup {
+                    children,
+                    expanded: false,
+                });
             }
         }
 
-        self.push_log(UiLogLevel::Info, format!("Playlist \"{title}\": {total} track(s) added."));
+        self.push_log(
+            UiLogLevel::Info,
+            format!("Playlist \"{title}\": {total} track(s) added."),
+        );
+        if playlist_source == Source::Spotify && total >= PUBLIC_PAGE_LIMIT {
+            self.push_log(
+                UiLogLevel::Warn,
+                format!("Spotify only exposes about {PUBLIC_PAGE_LIMIT} tracks of a public playlist; any further tracks are not included."),
+            );
+            self.status = format!("Spotify playlist limited to about {PUBLIC_PAGE_LIMIT} tracks.");
+        }
+
         if !preview_jobs.is_empty() {
-            spawn_previews(preview_jobs, self.cookies_path(), self.inbox.clone());
+            spawn_previews(
+                preview_jobs,
+                self.cookies_path(),
+                self.inbox.clone(),
+                self.resolve_cancel.clone(),
+            );
         }
         spawn_thumbnails(thumb_jobs, self.inbox.clone());
     }

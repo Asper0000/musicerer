@@ -1,19 +1,11 @@
-//! Minimal Spotify metadata used only to build a search query and tag files.
+//! The few Spotify fields Musicerer needs: to search for audio and to tag the file.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct SpotifyMeta {
     pub title: String,
     pub artists: String,
-    pub album: String,
-    pub year: Option<i32>,
-    pub track_number: Option<u16>,
-    pub isrc: Option<String>,
     pub duration_ms: Option<u64>,
     pub cover_url: Option<String>,
-    #[serde(skip)]
-    pub cover_jpeg: Option<Vec<u8>>,
 }
 
 impl SpotifyMeta {
@@ -29,15 +21,11 @@ impl SpotifyMeta {
     pub fn search_query(&self) -> String {
         let title = self.title.trim();
         let artists = self.artists.trim();
-        if title.is_empty() && artists.is_empty() {
-            return String::new();
-        }
-        if artists.is_empty() {
-            title.to_string()
-        } else if title.is_empty() {
-            artists.to_string()
-        } else {
-            format!("{artists} - {title}")
+        match (artists.is_empty(), title.is_empty()) {
+            (true, true) => String::new(),
+            (true, false) => title.to_string(),
+            (false, true) => artists.to_string(),
+            (false, false) => format!("{artists} - {title}"),
         }
     }
 }

@@ -21,7 +21,13 @@ pub enum Tool {
 
 impl Tool {
     /// Declaration order matters: it is also the index used by the embedded-tool cache.
-    pub const ALL: [Tool; 5] = [Tool::YtDlp, Tool::Ffmpeg, Tool::Ffprobe, Tool::Deno, Tool::SoundCloud];
+    pub const ALL: [Tool; 5] = [
+        Tool::YtDlp,
+        Tool::Ffmpeg,
+        Tool::Ffprobe,
+        Tool::Deno,
+        Tool::SoundCloud,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -34,7 +40,11 @@ impl Tool {
     }
 
     pub fn file_name(self) -> String {
-        if cfg!(windows) { format!("{}.exe", self.label()) } else { self.label().to_string() }
+        if cfg!(windows) {
+            format!("{}.exe", self.label())
+        } else {
+            self.label().to_string()
+        }
     }
 
     /// The SoundCloud fallback only matters for DRM-protected SoundCloud tracks.
@@ -44,6 +54,7 @@ impl Tool {
 }
 
 /// True when this executable carries the tools inside itself.
+#[allow(dead_code)]
 pub const BUNDLED: bool = cfg!(all(feature = "bundled", target_os = "windows"));
 
 #[cfg(all(feature = "bundled", target_os = "windows"))]
@@ -58,8 +69,13 @@ mod embedded {
     const DENO: &[u8] = include_bytes!("../../tools/deno.exe");
     const SOUNDCLOUD: &[u8] = include_bytes!("../../tools/soundcloud.exe");
 
-    static EXTRACTED: [OnceLock<Option<PathBuf>>; 5] =
-        [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static EXTRACTED: [OnceLock<Option<PathBuf>>; 5] = [
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+        OnceLock::new(),
+    ];
 
     fn bytes(tool: Tool) -> &'static [u8] {
         match tool {
@@ -73,16 +89,21 @@ mod embedded {
 
     /// Path of the extracted copy; extracted lazily, once per tool per run.
     pub fn path(tool: Tool) -> Option<PathBuf> {
-        EXTRACTED[tool as usize].get_or_init(|| extract(tool)).clone()
+        EXTRACTED[tool as usize]
+            .get_or_init(|| extract(tool))
+            .clone()
     }
 
     fn extract(tool: Tool) -> Option<PathBuf> {
         let data = bytes(tool);
-        let dir = std::env::temp_dir().join(format!("musicerer-tools-{}", env!("CARGO_PKG_VERSION")));
+        let dir =
+            std::env::temp_dir().join(format!("musicerer-tools-{}", env!("CARGO_PKG_VERSION")));
         std::fs::create_dir_all(&dir).ok()?;
 
         let target = dir.join(tool.file_name());
-        let up_to_date = std::fs::metadata(&target).map(|m| m.len() == data.len() as u64).unwrap_or(false);
+        let up_to_date = std::fs::metadata(&target)
+            .map(|m| m.len() == data.len() as u64)
+            .unwrap_or(false);
         if up_to_date {
             return Some(target);
         }
@@ -116,7 +137,10 @@ fn tools_dirs() -> Vec<PathBuf> {
     if let Ok(cwd) = std::env::current_dir() {
         dirs.push(cwd.join("tools"));
     }
-    if let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|p| p.join("tools"))) {
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("tools")))
+    {
         if !dirs.contains(&dir) {
             dirs.push(dir);
         }
@@ -125,7 +149,9 @@ fn tools_dirs() -> Vec<PathBuf> {
 }
 
 fn find_in_dirs(dirs: impl IntoIterator<Item = PathBuf>, file_name: &str) -> Option<PathBuf> {
-    dirs.into_iter().map(|d| d.join(file_name)).find(|p| p.is_file())
+    dirs.into_iter()
+        .map(|d| d.join(file_name))
+        .find(|p| p.is_file())
 }
 
 /// Locates a tool. Cheap enough to call before every spawn, so a tool dropped into
@@ -141,7 +167,10 @@ pub fn find(tool: Tool) -> Option<PathBuf> {
 }
 
 pub fn missing() -> Vec<Tool> {
-    Tool::ALL.into_iter().filter(|t| find(*t).is_none()).collect()
+    Tool::ALL
+        .into_iter()
+        .filter(|t| find(*t).is_none())
+        .collect()
 }
 
 /// `PATH` with the folder of every resolved tool in front, so tools that look for
@@ -158,7 +187,9 @@ fn search_path() -> Option<OsString> {
     if dirs.is_empty() {
         return None;
     }
-    dirs.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+    dirs.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
     std::env::join_paths(dirs).ok()
 }
 

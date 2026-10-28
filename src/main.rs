@@ -25,6 +25,7 @@ fn warn_about_missing_tools() {
 }
 
 fn main() -> iced::Result {
+    backend::cleanup_stale_temp_dirs();
     warn_about_missing_tools();
 
     let icon = iced::window::icon::from_file_data(WINDOW_ICON, None).ok();

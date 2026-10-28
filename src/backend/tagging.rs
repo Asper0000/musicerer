@@ -1,10 +1,10 @@
 //! Reads yt-dlp's info.json, picks the best title/artist/cover and writes the tags.
-//! When Spotify metadata is present, its title, artists and cover win;
-//! album/year/track number still come from the download backend when Spotify
-//! did not supply them.
+//! When Spotify metadata is present, its title, artists and cover win; the download
+//! backend only fills in what Spotify did not supply (album, year, track number,
+//! and any field Spotify left empty).
 
+use super::spotify::{self, SpotifyMeta};
 use super::{audio, emit, log, soundcloud_fallback, Inbox, LogLevel, WorkerEvent};
-use crate::backend::spotify::SpotifyMeta;
 use audiotags::{MimeType, Picture, Tag};
 use serde::Deserialize;
 use std::fs;
@@ -31,8 +31,8 @@ pub fn tag_audio(
     });
     let mut album = info.as_ref().and_then(|i| i.album.clone());
 
-    let mut cover_bytes = if let Some(thumb) = audio::find_thumbnail(audio_path) {
-        match audio::square_cover(&thumb) {
+    let mut cover_bytes = match audio::find_thumbnail(audio_path) {
+        Some(thumb) => match audio::square_cover(&thumb) {
             Ok(bytes) => Some(bytes),
             Err(err) => {
                 log(
@@ -42,9 +42,8 @@ pub fn tag_audio(
                 );
                 None
             }
-        }
-    } else {
-        None
+        },
+        None => None,
     };
 
     if info.is_none() {
@@ -81,7 +80,7 @@ pub fn tag_audio(
         }
     }
 
-    // Spotify wins for title, artist, cover when present.
+    // Spotify wins for title, artist and cover whenever it has them.
     if let Some(sp) = spotify {
         if !sp.title.trim().is_empty() {
             title = Some(sp.title.trim().to_string());
@@ -89,16 +88,13 @@ pub fn tag_audio(
         if !sp.artists.trim().is_empty() {
             artist = Some(sp.artists.trim().to_string());
         }
-        if let Some(jpeg) = sp.cover_jpeg.as_ref() {
-            if let Ok(square) = audio::square_cover_from_bytes(jpeg) {
-                cover_bytes = Some(square);
-            }
-        } else if let Some(cover_url) = sp.cover_url.as_ref() {
-            if let Ok(bytes) = crate::backend::spotify::api::fetch_cover_bytes(cover_url) {
-                if let Ok(square) = audio::square_cover_from_bytes(&bytes) {
-                    cover_bytes = Some(square);
-                }
-            }
+        let spotify_cover = sp
+            .cover_url
+            .as_deref()
+            .and_then(|u| spotify::fetch_cover_bytes(u).ok())
+            .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok());
+        if spotify_cover.is_some() {
+            cover_bytes = spotify_cover;
         }
     }
 
@@ -120,7 +116,7 @@ pub fn tag_audio(
         );
     }
 
-    let final_album = album.unwrap_or_else(|| "Musicerer".to_string());
+    let final_album = album.unwrap_or_default();
     let year = info.as_ref().and_then(|i| {
         i.release_date
             .as_deref()

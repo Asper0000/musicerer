@@ -28,7 +28,6 @@ const VPN_PROCESS_PATTERNS: &[&str] = &[
     "ipvanish",
     "windscribe",
     "privateinternetaccess",
-    "pia",
     "tunnelbear",
     "hide.me",
     "hideme",
@@ -53,17 +52,9 @@ const VPN_PROCESS_PATTERNS: &[&str] = &[
     // Cloaking / proxy clients
     "shadowsocks",
     "v2ray",
-    "xray",
-    "clash",
     "sing-box",
     "trojan",
     "hysteria",
-    // Mesh / WARP (soft signals - often dev tools)
-    "tailscale",
-    "tailscaled",
-    "warp-svc",
-    "warp-cli",
-    "cloudflare warp",
 ];
 
 pub fn detect() -> VpnInfo {
@@ -73,7 +64,7 @@ pub fn detect() -> VpnInfo {
     let mut matches: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (_pid, process) in sys.processes() {
+    for process in sys.processes().values() {
         let raw_name = process.name().to_string_lossy().to_string();
         let lower = raw_name.to_lowercase();
         for pattern in VPN_PROCESS_PATTERNS {

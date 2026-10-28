@@ -1,12 +1,19 @@
-use super::{audio::{make_rounded_thumb, make_rounded_thumb_from_bytes}, detect_source, emit, soundcloud_fallback,
-    tools::{self, Tool}, Inbox, Source, Thumb, WorkerEvent};
+use super::process;
+use super::{
+    audio::{make_rounded_thumb, make_rounded_thumb_from_bytes},
+    detect_source, emit, soundcloud_fallback,
+    tools::{self, Tool},
+    Inbox, Source, Thumb, WorkerEvent,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 
 const PREVIEW_WORKERS: usize = 3;
+const PREVIEW_THUMB_PX: u32 = 40;
+const PREVIEW_THUMB_RADIUS: f32 = 8.0;
 
 pub struct Preview {
     pub title: String,
@@ -18,38 +25,44 @@ pub fn spawn_preview(
     url: String,
     cookies: Option<PathBuf>,
     inbox: Inbox,
+    cancel: Arc<AtomicBool>,
 ) {
-    spawn_previews(vec![(id, url)], cookies, inbox);
+    spawn_previews(vec![(id, url)], cookies, inbox, cancel);
 }
 
-/// Refreshes track-level metadata with a small worker pool. SoundCloud's flat
-/// playlist entries can contain creator artwork or omit title/artwork entirely;
-/// re-resolving the individual track URL gives the same metadata as adding that
-/// track directly, without spawning hundreds of yt-dlp processes at once.
 pub fn spawn_previews(
     jobs: Vec<(u64, String)>,
     cookies: Option<PathBuf>,
     inbox: Inbox,
+    cancel: Arc<AtomicBool>,
 ) {
     if jobs.is_empty() {
         return;
     }
-
     let workers = PREVIEW_WORKERS.min(jobs.len());
     let jobs = Arc::new(jobs);
     let next = Arc::new(AtomicUsize::new(0));
-
     for _ in 0..workers {
-        let (jobs, next, cookies, inbox) = (
+        let (jobs, next, cookies, inbox, cancel) = (
             jobs.clone(),
             next.clone(),
             cookies.clone(),
             inbox.clone(),
+            cancel.clone(),
         );
         thread::spawn(move || loop {
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
             let index = next.fetch_add(1, Ordering::Relaxed);
-            let Some((id, url)) = jobs.get(index) else { break; };
-            let event = match fetch_preview(url, cookies.as_deref()) {
+            let Some((id, url)) = jobs.get(index) else {
+                break;
+            };
+            let result = fetch_preview(url, cookies.as_deref(), &cancel);
+            if cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let event = match result {
                 Ok(p) => WorkerEvent::PreviewReady {
                     id: *id,
                     title: p.title,
@@ -62,7 +75,12 @@ pub fn spawn_previews(
     }
 }
 
-fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
+fn fetch_preview(
+    url: &str,
+    cookies: Option<&Path>,
+    cancel: &AtomicBool,
+) -> Result<Preview, String> {
+    let _permit = super::metadata_limit::acquire(cancel).ok_or_else(|| "cancelled".to_string())?;
     let source = detect_source(url);
     let tmp = tempfile::Builder::new()
         .prefix("musicerer-preview-")
@@ -71,45 +89,52 @@ fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
     let out_tpl = tmp.path().join("%(id)s.%(ext)s");
 
     let mut cmd = tools::command(Tool::YtDlp);
-
     cmd.arg("--skip-download")
         .arg("--write-thumbnail")
-        .arg("--convert-thumbnails").arg("jpg")
+        .arg("--convert-thumbnails")
+        .arg("jpg")
         .arg("--write-info-json")
         .arg("--no-playlist")
         .arg("--no-warnings")
         .arg("--no-color")
-        .arg("-o").arg(&out_tpl);
-
+        .arg("-o")
+        .arg(&out_tpl);
     tools::add_ffmpeg_location(&mut cmd);
-
     if source == Source::YouTube {
-        cmd.arg("--js-runtimes").arg("deno")
-            .arg("--remote-components").arg("ejs:github")
+        cmd.arg("--js-runtimes")
+            .arg("deno")
+            .arg("--remote-components")
+            .arg("ejs:github")
             .arg("--extractor-args")
             .arg("youtube:player_client=default,web_embedded,tv");
     }
-    if let Some(c) = cookies { cmd.arg("--cookies").arg(c); }
+    if let Some(c) = cookies {
+        cmd.arg("--cookies").arg(c);
+    }
     cmd.arg(url);
 
-    let output = cmd.output().map_err(|e| format!("spawn failed: {e}"))?;
+    let output =
+        process::output_stoppable(&mut cmd, cancel).map_err(|e| format!("spawn failed: {e}"))?;
     if !output.status.success() {
-        if source == Source::SoundCloud {
+        if source == Source::SoundCloud && !cancel.load(Ordering::Relaxed) {
             if let Ok((title, thumb_bytes)) = soundcloud_fallback::fetch_oembed(url) {
-                let thumb = thumb_bytes
-                    .as_deref()
-                    .and_then(|bytes| make_rounded_thumb_from_bytes(bytes, 40, 8.0).ok());
+                let thumb = thumb_bytes.as_deref().and_then(|b| {
+                    make_rounded_thumb_from_bytes(b, PREVIEW_THUMB_PX, PREVIEW_THUMB_RADIUS).ok()
+                });
                 return Ok(Preview { title, thumb });
             }
         }
         let err = String::from_utf8_lossy(&output.stderr);
-        let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
+        let last = err
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("unknown error");
         return Err(last.to_string());
     }
 
     let mut title = "Untitled".to_string();
     let mut thumb = None;
-
     if let Ok(rd) = fs::read_dir(tmp.path()) {
         for entry in rd.flatten() {
             let p = entry.path();
@@ -124,11 +149,10 @@ fn fetch_preview(url: &str, cookies: Option<&Path>) -> Result<Preview, String> {
                 }
             } else if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                 if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
-                    thumb = make_rounded_thumb(&p, 40, 8.0).ok();
+                    thumb = make_rounded_thumb(&p, PREVIEW_THUMB_PX, PREVIEW_THUMB_RADIUS).ok();
                 }
             }
         }
     }
-
     Ok(Preview { title, thumb })
 }

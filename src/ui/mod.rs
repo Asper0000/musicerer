@@ -6,10 +6,22 @@ use crate::backend::Source;
 use iced::widget::image;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View { Downloads, Settings }
+pub enum View {
+    Downloads,
+    Settings,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemStatus { Pending, Downloading, Done, Failed, Unavailable, DrmSkipped, Stopped }
+pub enum ItemStatus {
+    Pending,
+    Downloading,
+    Done,
+    Failed,
+    Unavailable,
+    DrmSkipped,
+    Skipped,
+    Stopped,
+}
 
 impl ItemStatus {
     pub fn label(self) -> &'static str {
@@ -20,6 +32,7 @@ impl ItemStatus {
             ItemStatus::Failed => "Failed",
             ItemStatus::Unavailable => "Unavailable",
             ItemStatus::DrmSkipped => "DRM skipped",
+            ItemStatus::Skipped => "Skipped",
             ItemStatus::Stopped => "Stopped",
         }
     }
@@ -32,7 +45,6 @@ pub enum ThumbState {
     Failed,
 }
 
-/// The extra tracks of a playlist, shown in a collapsible dropdown under the main row.
 #[derive(Clone)]
 pub struct PlaylistGroup {
     pub children: Vec<QueueItem>,
@@ -48,14 +60,10 @@ pub struct QueueItem {
     pub progress: f32,
     pub display_name: String,
     pub thumbnail: ThumbState,
-    /// A playlist URL that is still being expanded into tracks.
     pub resolving: bool,
     pub group: Option<PlaylistGroup>,
-    /// For Spotify items: the matched YouTube/SoundCloud URL used for download.
     pub resolved_url: Option<String>,
-    /// Spotify-sourced tags/cover written into the final .m4a.
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
-    /// Title of the playlist/album this row represents; names the output subfolder.
     pub playlist_title: Option<String>,
 }
 
@@ -76,31 +84,38 @@ impl QueueItem {
             playlist_title: None,
         }
     }
-
-    /// This row's own track followed by every playlist child: all downloadable tracks.
     pub fn tracks(&self) -> impl Iterator<Item = &QueueItem> {
         std::iter::once(self).chain(self.group.iter().flat_map(|g| g.children.iter()))
     }
-
     pub fn for_each_track_mut(&mut self, mut f: impl FnMut(&mut QueueItem)) {
         f(self);
         if let Some(group) = &mut self.group {
             group.children.iter_mut().for_each(f);
         }
     }
-
     pub fn find_mut(&mut self, id: u64) -> Option<&mut QueueItem> {
         if self.id == id {
             return Some(self);
         }
-        self.group.as_mut()?.children.iter_mut().find(|c| c.id == id)
+        self.group
+            .as_mut()?
+            .children
+            .iter_mut()
+            .find(|c| c.id == id)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum UiLogLevel { Info, Warn, Error }
+pub enum UiLogLevel {
+    Info,
+    Warn,
+    Error,
+}
 
 #[derive(Debug, Clone)]
-pub struct LogLine { pub level: UiLogLevel, pub text: String }
+pub struct LogLine {
+    pub level: UiLogLevel,
+    pub text: String,
+}
 
 pub use self::progress::custom_progress_bar;

@@ -1,9 +1,6 @@
 use crate::backend::Source;
 use crate::theme;
-use crate::ui::{
-    icons::*,
-    ItemStatus, QueueItem, ThumbState,
-};
+use crate::ui::{icons::*, ItemStatus, QueueItem, ThumbState};
 use iced::widget::{button, column, container, image, row, svg, text, Column, Space};
 use iced::{Alignment, Color, Element, Length};
 
@@ -36,14 +33,31 @@ where
     let group = item.group.as_ref().filter(|g| !g.children.is_empty());
     let dropdown = group.map(|g| Dropdown {
         expanded: g.expanded,
-        done: item.tracks().filter(|t| matches!(
-            t.status,
-            ItemStatus::Done | ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped | ItemStatus::Stopped
-        )).count(),
+        done: item
+            .tracks()
+            .filter(|t| {
+                matches!(
+                    t.status,
+                    ItemStatus::Done
+                        | ItemStatus::Failed
+                        | ItemStatus::Unavailable
+                        | ItemStatus::DrmSkipped
+                        | ItemStatus::Stopped
+                )
+            })
+            .count(),
         total: g.children.len() + 1,
     });
 
-    let main = queue_row(RowKind::Top(index), item, downloading, dropdown, on_remove, on_toggle, tick);
+    let main = queue_row(
+        RowKind::Top(index),
+        item,
+        downloading,
+        dropdown,
+        on_remove,
+        on_toggle,
+        tick,
+    );
 
     let Some(group) = group.filter(|g| g.expanded) else {
         return main;
@@ -53,17 +67,24 @@ where
         group
             .children
             .iter()
-            .map(|child| queue_row(RowKind::Child, child, downloading, None, on_remove, on_toggle, tick))
+            .map(|child| {
+                queue_row(
+                    RowKind::Child,
+                    child,
+                    downloading,
+                    None,
+                    on_remove,
+                    on_toggle,
+                    tick,
+                )
+            })
             .collect::<Vec<_>>(),
     )
     .spacing(3);
 
-    column![
-        main,
-        container(children).padding(0.0),
-    ]
-    .spacing(3)
-    .into()
+    column![main, container(children).padding(0.0),]
+        .spacing(3)
+        .into()
 }
 
 fn queue_row<'a, M>(
@@ -85,6 +106,7 @@ where
         ItemStatus::Failed => (theme::danger(), ICON_STATUS_X),
         ItemStatus::Unavailable => (theme::text_muted(), ICON_STATUS_X),
         ItemStatus::DrmSkipped => (theme::text_muted(), ICON_STATUS_SLASH),
+        ItemStatus::Skipped => (theme::text_muted(), ICON_STATUS_SLASH),
         ItemStatus::Stopped => (theme::danger(), ICON_STATUS_SQUARE),
     };
 
@@ -104,7 +126,9 @@ where
             svg(svg::Handle::from_memory(spinner_icon(tick)))
                 .width(Length::Fixed(18.0))
                 .height(Length::Fixed(18.0))
-                .style(|_, _| svg::Style { color: Some(theme::text_muted()) }),
+                .style(|_, _| svg::Style {
+                    color: Some(theme::text_muted()),
+                }),
         )
         .width(Length::Fixed(40.0))
         .height(Length::Fixed(40.0))
@@ -116,7 +140,9 @@ where
             svg(svg::Handle::from_memory(ICON_THUMB_FAIL))
                 .width(Length::Fixed(18.0))
                 .height(Length::Fixed(18.0))
-                .style(|_, _| svg::Style { color: Some(theme::danger()) }),
+                .style(|_, _| svg::Style {
+                    color: Some(theme::danger()),
+                }),
         )
         .width(Length::Fixed(40.0))
         .height(Length::Fixed(40.0))
@@ -129,17 +155,26 @@ where
     let status_glyph = svg(svg::Handle::from_memory(status_icon))
         .width(Length::Fixed(14.0))
         .height(Length::Fixed(14.0))
-        .style(move |_, _| svg::Style { color: Some(status_color) });
+        .style(move |_, _| svg::Style {
+            color: Some(status_color),
+        });
 
     let source_glyph = container(
         svg(svg::Handle::from_memory(source_icon))
             .width(Length::Fixed(12.0))
             .height(Length::Fixed(12.0))
-            .style(move |_, _| svg::Style { color: Some(source_color) }),
+            .style(move |_, _| svg::Style {
+                color: Some(source_color),
+            }),
     )
     .width(Length::Fixed(14.0))
     .height(Length::Fixed(16.0))
-    .padding(iced::Padding { top: 3.0, right: 0.0, bottom: 0.0, left: 0.0 })
+    .padding(iced::Padding {
+        top: 3.0,
+        right: 0.0,
+        bottom: 0.0,
+        left: 0.0,
+    })
     .center_x(Length::Fixed(14.0))
     .center_y(Length::Fixed(16.0));
 
@@ -149,8 +184,17 @@ where
             Source::Spotify => crate::backend::spotify::is_spotify_playlist_url(&item.url),
             other => crate::backend::is_playlist_url(&item.url, other),
         };
-        let what = if is_playlist { "Fetching playlist" } else { "Fetching track" };
+        let what = if is_playlist {
+            "Fetching playlist"
+        } else {
+            "Fetching track"
+        };
         format!("{what}{dots:<3}")
+    } else if item.spotify.is_some()
+        && item.resolved_url.is_none()
+        && item.status == ItemStatus::Pending
+    {
+        format!("Matching{dots:<3}")
     } else if matches!(item.thumbnail, ThumbState::Loading) && item.status == ItemStatus::Pending {
         format!("Fetching track{dots:<3}")
     } else {
@@ -160,7 +204,9 @@ where
         source_glyph,
         text(format!("{} \u{00B7} {}", status_label, item.source.label()))
             .size(10)
-            .style(move |_| iced::widget::text::Style { color: Some(status_color) }),
+            .style(move |_| iced::widget::text::Style {
+                color: Some(status_color)
+            }),
     ]
     .spacing(4)
     .align_y(Alignment::Center);
@@ -233,7 +279,11 @@ fn dropdown_button<'a, M>(
 where
     M: Clone + 'a,
 {
-    let icon = if dd.expanded { ICON_CHEVRON_DOWN } else { ICON_CHEVRON_RIGHT };
+    let icon = if dd.expanded {
+        ICON_CHEVRON_DOWN
+    } else {
+        ICON_CHEVRON_RIGHT
+    };
     button(
         row![
             text(format!("{}/{}", dd.done, dd.total))
@@ -242,7 +292,9 @@ where
             svg(svg::Handle::from_memory(icon))
                 .width(Length::Fixed(14.0))
                 .height(Length::Fixed(14.0))
-                .style(|_, _| svg::Style { color: Some(theme::text_secondary()) }),
+                .style(|_, _| svg::Style {
+                    color: Some(theme::text_secondary())
+                }),
         ]
         .spacing(4)
         .align_y(Alignment::Center),

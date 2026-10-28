@@ -16,7 +16,10 @@ pub fn find_audio(dir: &Path) -> Option<PathBuf> {
             }
             continue;
         }
-        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
         if matches!(ext.as_deref(), Some("m4a") | Some("mp4")) {
             let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             if best.as_ref().is_none_or(|(best_size, _)| size > *best_size) {
@@ -29,9 +32,13 @@ pub fn find_audio(dir: &Path) -> Option<PathBuf> {
 
 pub fn find_thumbnail(audio_path: &Path) -> Option<PathBuf> {
     let jpg = audio_path.with_extension("jpg");
-    if jpg.exists() { return Some(jpg); }
+    if jpg.exists() {
+        return Some(jpg);
+    }
     let png = audio_path.with_extension("png");
-    if png.exists() { return Some(png); }
+    if png.exists() {
+        return Some(png);
+    }
     None
 }
 
@@ -65,7 +72,11 @@ pub fn make_rounded_thumb(src: &Path, size: u32, radius: f32) -> Result<Thumb, S
     round_thumb(img, size, radius)
 }
 
-pub fn make_rounded_thumb_from_bytes(bytes: &[u8], size: u32, radius: f32) -> Result<Thumb, String> {
+pub fn make_rounded_thumb_from_bytes(
+    bytes: &[u8],
+    size: u32,
+    radius: f32,
+) -> Result<Thumb, String> {
     let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
     round_thumb(img, size, radius)
 }
@@ -102,7 +113,6 @@ fn round_thumb(img: image::DynamicImage, size: u32, radius: f32) -> Result<Thumb
     }
     Ok((w, h, pixels))
 }
-
 
 #[cfg(test)]
 mod tests {

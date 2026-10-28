@@ -199,10 +199,10 @@ fn meta_from_track_obj(obj: &Value) -> Option<SpotifyMeta> {
         return None;
     }
     if let Some(ty) = t.get("type").and_then(|v| v.as_str()) {
-        if ty != "track" && ty != "episode" {
-            if t.get("artists").is_none() && t.get("subtitle").is_none() {
-                return None;
-            }
+        if ty != "track" && ty != "episode"
+            && t.get("artists").is_none() && t.get("subtitle").is_none()
+        {
+            return None;
         }
     }
     let artists = t
@@ -210,11 +210,19 @@ fn meta_from_track_obj(obj: &Value) -> Option<SpotifyMeta> {
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|a| a.get("name").and_then(|n| n.as_str()).or_else(|| a.as_str()))
+                .filter_map(|a| {
+                    a.get("name")
+                        .and_then(|n| n.as_str())
+                        .or_else(|| a.as_str())
+                })
                 .collect::<Vec<_>>()
                 .join(", ")
         })
-        .or_else(|| t.get("subtitle").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .or_else(|| {
+            t.get("subtitle")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
         .unwrap_or_default();
     let duration_ms = t
         .get("duration")
@@ -232,7 +240,6 @@ fn meta_from_track_obj(obj: &Value) -> Option<SpotifyMeta> {
         artists,
         duration_ms,
         cover_url,
-        ..Default::default()
     })
 }
 
@@ -395,7 +402,6 @@ fn fetch_embed_meta(spotify_url: &str) -> Result<SpotifyMeta, String> {
                     artists,
                     cover_url,
                     duration_ms,
-                    ..Default::default()
                 });
             }
         }

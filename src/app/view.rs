@@ -3,16 +3,20 @@ use crate::backend::vpn::VpnInfo;
 use crate::theme as t;
 use crate::ui::{
     custom_progress_bar,
-    icons::{ICON_ALERT_TRIANGLE, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS, ICON_SRC_SOUNDCLOUD, ICON_SRC_YOUTUBE},
+    icons::{
+        ICON_ALERT_TRIANGLE, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS, ICON_SRC_SOUNDCLOUD,
+        ICON_SRC_YOUTUBE,
+    },
     queue::queue_group,
     ItemStatus, UiLogLevel, View,
 };
 
 use iced::widget::{
-    button, column, container, row, scrollable, svg, text, text_input, Column, MouseArea, Space, stack,
+    button, column, container, row, scrollable, stack, svg, text, text_input, Column, MouseArea,
+    Space,
 };
-use iced::{Alignment, Element, Length, Color};
 use iced::window::Direction;
+use iced::{Alignment, Color, Element, Length};
 
 const ICON_MINIMIZE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1"/></svg>"#;
 const ICON_MAXIMIZE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" fill="none" stroke="currentColor" stroke-width="1"/></svg>"#;
@@ -26,8 +30,12 @@ fn resize_handle(dir: Direction, width: Length, height: Length) -> Element<'stat
     let interaction = match dir {
         Direction::North | Direction::South => iced::mouse::Interaction::ResizingVertically,
         Direction::East | Direction::West => iced::mouse::Interaction::ResizingHorizontally,
-        Direction::NorthEast | Direction::SouthWest => iced::mouse::Interaction::ResizingDiagonallyUp,
-        Direction::NorthWest | Direction::SouthEast => iced::mouse::Interaction::ResizingDiagonallyDown,
+        Direction::NorthEast | Direction::SouthWest => {
+            iced::mouse::Interaction::ResizingDiagonallyUp
+        }
+        Direction::NorthWest | Direction::SouthEast => {
+            iced::mouse::Interaction::ResizingDiagonallyDown
+        }
     };
     MouseArea::new(Space::new().width(width).height(height))
         .on_press(Message::WindowResize(dir))
@@ -67,25 +75,26 @@ impl App {
                 ..Default::default()
             });
 
-        let content_area = row![sidebar, sidebar_separator, content].width(Length::Fill).height(Length::Fill);
+        let content_area = row![sidebar, sidebar_separator, content]
+            .width(Length::Fill)
+            .height(Length::Fill);
 
-        let content_with_overlay: Element<'_, Message> = if let Some(vpn) = &self.startup_vpn_warning {
-            stack![content_area, self.view_vpn_overlay(vpn)].into()
-        } else if self.show_platforms {
-            stack![content_area, self.view_platforms_dialog()].into()
-        } else {
-            content_area.into()
-        };
+        let content_with_overlay: Element<'_, Message> =
+            if let Some(vpn) = &self.startup_vpn_warning {
+                stack![content_area, self.view_vpn_overlay(vpn)].into()
+            } else if self.show_platforms {
+                stack![content_area, self.view_platforms_dialog()].into()
+            } else {
+                content_area.into()
+            };
 
-        let main_content = container(
-            column![
-                self.view_title_bar(),
-                top_separator,
-                content_with_overlay,
-                bottom_separator,
-                self.view_status_bar(),
-            ]
-        )
+        let main_content = container(column![
+            self.view_title_bar(),
+            top_separator,
+            content_with_overlay,
+            bottom_separator,
+            self.view_status_bar(),
+        ])
         .padding(1)
         .style(|_| iced::widget::container::Style {
             background: Some(iced::Background::Color(t::bg())),
@@ -103,18 +112,26 @@ impl App {
                 resize_handle(Direction::NorthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
                 resize_handle(Direction::North, Length::Fill, Length::Fixed(8.0)),
                 resize_handle(Direction::NorthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
-            ].height(8).width(Length::Fill),
+            ]
+            .height(8)
+            .width(Length::Fill),
             row![
                 resize_handle(Direction::West, Length::Fixed(8.0), Length::Fill),
                 Space::new().width(Length::Fill).height(Length::Fill),
                 resize_handle(Direction::East, Length::Fixed(8.0), Length::Fill),
-            ].width(Length::Fill).height(Length::Fill),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill),
             row![
                 resize_handle(Direction::SouthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
                 resize_handle(Direction::South, Length::Fill, Length::Fixed(8.0)),
                 resize_handle(Direction::SouthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
-            ].height(8).width(Length::Fill),
-        ].width(Length::Fill).height(Length::Fill);
+            ]
+            .height(8)
+            .width(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
 
         stack![main_content, resize_overlay].into()
     }
@@ -127,8 +144,15 @@ impl App {
         let title = text("Musicerer v0.2").size(13).style(t::muted_text_strong);
 
         let min_btn = button(
-            container(svg(svg::Handle::from_memory(ICON_MINIMIZE)).width(Length::Fixed(12.0)).height(Length::Fixed(12.0)).style(|_, _| svg::Style { color: Some(t::text_primary()) }))
-                .center_y(Length::Fill)
+            container(
+                svg(svg::Handle::from_memory(ICON_MINIMIZE))
+                    .width(Length::Fixed(12.0))
+                    .height(Length::Fixed(12.0))
+                    .style(|_, _| svg::Style {
+                        color: Some(t::text_primary()),
+                    }),
+            )
+            .center_y(Length::Fill),
         )
         .on_press(Message::WindowMinimize)
         .style(t::window_control_button)
@@ -136,8 +160,15 @@ impl App {
         .padding([0, 16]);
 
         let max_btn = button(
-            container(svg(svg::Handle::from_memory(ICON_MAXIMIZE)).width(Length::Fixed(12.0)).height(Length::Fixed(12.0)).style(|_, _| svg::Style { color: Some(t::text_primary()) }))
-                .center_y(Length::Fill)
+            container(
+                svg(svg::Handle::from_memory(ICON_MAXIMIZE))
+                    .width(Length::Fixed(12.0))
+                    .height(Length::Fixed(12.0))
+                    .style(|_, _| svg::Style {
+                        color: Some(t::text_primary()),
+                    }),
+            )
+            .center_y(Length::Fill),
         )
         .on_press(Message::WindowMaximize)
         .style(t::window_control_button)
@@ -145,31 +176,42 @@ impl App {
         .padding([0, 16]);
 
         let close_btn = button(
-            container(svg(svg::Handle::from_memory(ICON_CLOSE)).width(Length::Fixed(12.0)).height(Length::Fixed(12.0)).style(|_, _| svg::Style { color: Some(t::text_primary()) }))
-                .center_y(Length::Fill)
+            container(
+                svg(svg::Handle::from_memory(ICON_CLOSE))
+                    .width(Length::Fixed(12.0))
+                    .height(Length::Fixed(12.0))
+                    .style(|_, _| svg::Style {
+                        color: Some(t::text_primary()),
+                    }),
+            )
+            .center_y(Length::Fill),
         )
         .on_press(Message::WindowClose)
         .style(t::close_button)
         .height(Length::Fixed(36.0))
         .padding([0, 16]);
 
-        let drag_content = row![icon, title]
-            .spacing(10)
-            .align_y(Alignment::Center);
+        let drag_content = row![icon, title].spacing(10).align_y(Alignment::Center);
 
         let drag_area = MouseArea::new(
             container(drag_content)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .center_y(Length::Fill)
-        ).on_press(Message::WindowDragged);
+                .center_y(Length::Fill),
+        )
+        .on_press(Message::WindowDragged);
 
         container(
             row![drag_area, min_btn, max_btn, close_btn]
                 .align_y(Alignment::Center)
-                .height(Length::Fill)
+                .height(Length::Fill),
         )
-        .padding(iced::Padding { top: 0.0, right: 0.0, bottom: 0.0, left: 12.0 })
+        .padding(iced::Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: 0.0,
+            left: 12.0,
+        })
         .width(Length::Fill)
         .height(Length::Fixed(36.0))
         .style(t::topbar)
@@ -180,32 +222,42 @@ impl App {
         let sc_icon = svg(svg::Handle::from_memory(ICON_SRC_SOUNDCLOUD))
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(48.0))
-            .style(|_, _| svg::Style { color: Some(Color::from_rgb(1.0, 0.33, 0.0)) });
+            .style(|_, _| svg::Style {
+                color: Some(Color::from_rgb(1.0, 0.33, 0.0)),
+            });
 
         let yt_icon = svg(svg::Handle::from_memory(ICON_SRC_YOUTUBE))
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(48.0))
-            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.93, 0.20, 0.20)) });
+            .style(|_, _| svg::Style {
+                color: Some(Color::from_rgb(0.93, 0.20, 0.20)),
+            });
 
         let sp_icon = svg(svg::Handle::from_memory(crate::ui::icons::ICON_SRC_SPOTIFY))
-
             .width(Length::Fixed(48.0))
-
             .height(Length::Fixed(48.0))
-
-            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.114, 0.725, 0.329)) });
+            .style(|_, _| svg::Style {
+                color: Some(Color::from_rgb(0.114, 0.725, 0.329)),
+            });
 
         let platforms_row = row![
-            column![sc_icon, Space::new().height(8), text("SoundCloud").size(12)].align_x(Alignment::Center),
+            column![sc_icon, Space::new().height(8), text("SoundCloud").size(12)]
+                .align_x(Alignment::Center),
             Space::new().width(40),
-            column![yt_icon, Space::new().height(8), text("YouTube").size(12)].align_x(Alignment::Center),
+            column![yt_icon, Space::new().height(8), text("YouTube").size(12)]
+                .align_x(Alignment::Center),
             Space::new().width(40),
-            column![sp_icon, Space::new().height(8), text("Spotify").size(12)].align_x(Alignment::Center),
-        ].align_y(Alignment::Center);
+            column![sp_icon, Space::new().height(8), text("Spotify").size(12)]
+                .align_x(Alignment::Center),
+        ]
+        .align_y(Alignment::Center);
 
         let card = container(
             column![
-                text("Supported Platforms").size(18).width(Length::Fill).align_x(Alignment::Center),
+                text("Supported Platforms")
+                    .size(18)
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
                 Space::new().height(12),
                 text("Musicerer currently supports downloading from these services:")
                     .size(13)
@@ -213,7 +265,9 @@ impl App {
                     .width(Length::Fill)
                     .align_x(Alignment::Center),
                 Space::new().height(24),
-                container(platforms_row).width(Length::Fill).center_x(Length::Fill),
+                container(platforms_row)
+                    .width(Length::Fill)
+                    .center_x(Length::Fill),
                 Space::new().height(28),
                 row![
                     Space::new().width(Length::Fill),
@@ -235,7 +289,12 @@ impl App {
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(|_| iced::widget::container::Style {
-                background: Some(iced::Background::Color(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.75 })),
+                background: Some(iced::Background::Color(Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.75,
+                })),
                 ..Default::default()
             })
             .into()
@@ -245,7 +304,9 @@ impl App {
         let alert = svg(svg::Handle::from_memory(ICON_ALERT_TRIANGLE))
             .width(Length::Fixed(28.0))
             .height(Length::Fixed(28.0))
-            .style(|_, _| svg::Style { color: Some(t::warning()) });
+            .style(|_, _| svg::Style {
+                color: Some(t::warning()),
+            });
 
         let card = container(
             column![
@@ -269,11 +330,16 @@ impl App {
                 Space::new().height(20),
                 row![
                     Space::new().width(Length::Fill),
+                    button(text("Don't show again").size(13))
+                        .on_press(Message::SuppressVpnWarning)
+                        .style(t::secondary_button)
+                        .padding([10, 16]),
                     button(text("Got it").size(13))
                         .on_press(Message::DismissVpnWarning)
                         .style(t::primary_button)
                         .padding([10, 24]),
-                ],
+                ]
+                .spacing(8),
             ]
             .spacing(0),
         )
@@ -287,7 +353,12 @@ impl App {
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(|_| iced::widget::container::Style {
-                background: Some(iced::Background::Color(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.75 })),
+                background: Some(iced::Background::Color(Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.75,
+                })),
                 ..Default::default()
             })
             .into()
@@ -304,9 +375,17 @@ impl App {
                 svg(svg::Handle::from_memory(ICON_FOLDER))
                     .width(Length::Fixed(14.0))
                     .height(Length::Fixed(14.0))
-                    .style(|_,_| svg::Style { color: Some(Color::from_rgb(0.95, 0.80, 0.30)) }),
-                text(folder_name).size(12).style(|_| iced::widget::text::Style { color: Some(t::text_primary()) })
-            ].spacing(8).align_y(Alignment::Center)
+                    .style(|_, _| svg::Style {
+                        color: Some(Color::from_rgb(0.95, 0.80, 0.30))
+                    }),
+                text(folder_name)
+                    .size(12)
+                    .style(|_| iced::widget::text::Style {
+                        color: Some(t::text_primary())
+                    })
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
         )
         .on_press(Message::OpenOutputDir)
         .style(|_, _| iced::widget::button::Style {
@@ -321,15 +400,21 @@ impl App {
             svg(svg::Handle::from_memory(ICON_DISK))
                 .width(Length::Fixed(14.0))
                 .height(Length::Fixed(14.0))
-                .style(|_,_| svg::Style { color: Some(t::text_secondary()) }),
+                .style(|_, _| svg::Style {
+                    color: Some(t::text_secondary())
+                }),
             text(&self.available_space).size(12).style(t::muted_text)
-        ].spacing(8).align_y(Alignment::Center);
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
 
-        let info_widget = column![
-            folder_row,
-            Space::new().height(6),
-            disk_row
-        ].padding(iced::Padding { top: 16.0, right: 14.0, bottom: 0.0, left: 14.0 });
+        let info_widget =
+            column![folder_row, Space::new().height(6), disk_row].padding(iced::Padding {
+                top: 16.0,
+                right: 14.0,
+                bottom: 0.0,
+                left: 14.0,
+            });
 
         let separator = container(Space::new().height(1))
             .width(Length::Fill)
@@ -386,11 +471,15 @@ impl App {
             .spacing(6)
             .padding([0, 8]);
 
-        container(column![info_widget, separator, nav].spacing(14).height(Length::Fill))
-            .style(t::sidebar)
-            .width(Length::Fixed(190.0))
-            .height(Length::Fill)
-            .into()
+        container(
+            column![info_widget, separator, nav]
+                .spacing(14)
+                .height(Length::Fill),
+        )
+        .style(t::sidebar)
+        .width(Length::Fixed(190.0))
+        .height(Length::Fill)
+        .into()
     }
 
     fn view_downloads(&self) -> Element<'_, Message> {
@@ -401,35 +490,38 @@ impl App {
                 svg(svg::Handle::from_memory(ICON_PLUG))
                     .width(Length::Fixed(14.0))
                     .height(Length::Fixed(14.0))
-                    .style(|_, _| svg::Style { color: Some(Color::WHITE) })
+                    .style(|_, _| svg::Style {
+                        color: Some(Color::WHITE)
+                    })
             )
             .on_press(Message::TogglePlatformsDialog)
             .style(t::primary_button)
             .padding(6)
-        ].align_y(Alignment::Center);
+        ]
+        .align_y(Alignment::Center);
 
-        let url_input = text_input(
-            "Input music URL",
-            &self.url_input,
-        )
-        .on_input(Message::UrlChanged)
-        .on_submit(Message::AddUrl)
-        .padding(10)
-        .size(13)
-        .style(t::text_input_style);
+        let url_input = text_input("Input music URL", &self.url_input)
+            .on_input(Message::UrlChanged)
+            .on_submit(Message::AddUrl)
+            .padding(10)
+            .size(13)
+            .style(t::text_input_style);
 
         let add_btn = button(text("Add").size(13))
             .on_press_maybe(
-                (!self.downloading && !self.url_input.trim().is_empty())
-                    .then_some(Message::AddUrl),
+                (!self.downloading && !self.url_input.trim().is_empty()).then_some(Message::AddUrl),
             )
             .style(t::primary_button)
             .padding([10, 16]);
 
-        let url_card = container(row![url_input, add_btn].spacing(6).align_y(Alignment::Center))
-            .style(t::card)
-            .padding(10)
-            .width(Length::Fill);
+        let url_card = container(
+            row![url_input, add_btn]
+                .spacing(6)
+                .align_y(Alignment::Center),
+        )
+        .style(t::card)
+        .padding(10)
+        .width(Length::Fill);
 
         let track_count = self.tracks().count();
         let resolving = self.queue.iter().any(|i| i.resolving);
@@ -467,13 +559,20 @@ impl App {
                 .iter()
                 .enumerate()
                 .map(|(i, item)| {
-                    queue_group(i, item, self.downloading, Message::RemoveTrack, Message::ToggleGroup, self.tick)
+                    queue_group(
+                        i,
+                        item,
+                        self.downloading,
+                        Message::RemoveTrack,
+                        Message::ToggleGroup,
+                        self.tick,
+                    )
                 })
                 .collect()
         };
 
-        let queue_list = scrollable(Column::with_children(queue_rows).spacing(4))
-            .height(Length::Fill);
+        let queue_list =
+            scrollable(Column::with_children(queue_rows).spacing(4)).height(Length::Fill);
 
         let queue_card = container(column![queue_header, queue_list].spacing(6))
             .style(t::card)
@@ -490,7 +589,7 @@ impl App {
             .padding([8, 14]);
 
         let stop = button(text("Stop").size(13))
-            .on_press_maybe(self.downloading.then_some(Message::StopQueue))
+            .on_press_maybe((self.downloading || resolving).then_some(Message::StopQueue))
             .style(t::secondary_button)
             .padding([8, 14]);
 
@@ -502,7 +601,12 @@ impl App {
             .padding([8, 14]);
 
         let log_toggle = {
-            let label = text(if self.show_log { "Hide Log" } else { "Show Log" }).size(13);
+            let label = text(if self.show_log {
+                "Hide Log"
+            } else {
+                "Show Log"
+            })
+            .size(13);
             let btn = button(label).on_press(Message::ToggleLog).padding([8, 12]);
             if self.log_attention > 0 {
                 btn.style(t::primary_button)
@@ -565,8 +669,7 @@ impl App {
                 })
                 .collect()
         };
-        let log_list = scrollable(Column::with_children(log_rows).spacing(2))
-            .height(Length::Fill);
+        let log_list = scrollable(Column::with_children(log_rows).spacing(2)).height(Length::Fill);
         container(column![text("Log").size(14), log_list].spacing(6))
             .style(t::card)
             .padding(10)
@@ -590,10 +693,14 @@ impl App {
             .style(t::secondary_button)
             .padding([10, 14]);
 
-        let output_row = container(row![output_input, output_browse].spacing(6).align_y(Alignment::Center))
-            .style(t::card)
-            .padding(10)
-            .width(Length::Fill);
+        let output_row = container(
+            row![output_input, output_browse]
+                .spacing(6)
+                .align_y(Alignment::Center),
+        )
+        .style(t::card)
+        .padding(10)
+        .width(Length::Fill);
 
         let output_section = column![
             text("Output folder").size(13),
@@ -617,10 +724,23 @@ impl App {
             .style(t::secondary_button)
             .padding([10, 14]);
 
-        let cookies_row = container(row![cookies_input, cookies_browse].spacing(6).align_y(Alignment::Center))
-            .style(t::card)
-            .padding(10)
-            .width(Length::Fill);
+        let cookies_row = container(
+            row![cookies_input, cookies_browse]
+                .spacing(6)
+                .align_y(Alignment::Center),
+        )
+        .style(t::card)
+        .padding(10)
+        .width(Length::Fill);
+
+        let cookies_trimmed = self.cookies_input.trim();
+        let (cookies_status_text, cookies_status_color) = if cookies_trimmed.is_empty() {
+            ("No file selected.".to_string(), t::text_muted())
+        } else if std::path::Path::new(cookies_trimmed).is_file() {
+            ("File found.".to_string(), t::success())
+        } else {
+            ("File not found.".to_string(), t::danger())
+        };
 
         let cookies_section = column![
             text("Cookies file").size(13),
@@ -629,9 +749,43 @@ impl App {
                 .style(t::muted_text),
             Space::new().height(6),
             cookies_row,
+            Space::new().height(4),
+            text(cookies_status_text)
+                .size(11)
+                .style(move |_| iced::widget::text::Style {
+                    color: Some(cookies_status_color)
+                }),
         ]
         .spacing(3);
 
+        let skip_on = self.skip_existing;
+        let skip_btn = button(
+            text(if skip_on { "Enabled" } else { "Disabled" })
+                .size(13)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+        )
+        .on_press(Message::ToggleSkipExisting(!skip_on))
+        .width(Length::Fixed(90.0))
+        .padding([8, 14]);
+        let skip_btn = if skip_on {
+            skip_btn.style(t::primary_button)
+        } else {
+            skip_btn.style(t::secondary_button)
+        };
+        let skip_section = row![
+            column![
+                text("Skip existing files").size(13),
+                text("Skip a track if its filename already exists in the destination folder.")
+                    .size(11)
+                    .style(t::muted_text),
+            ]
+            .spacing(3)
+            .width(Length::Fill),
+            skip_btn,
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center);
 
         let group_on = self.group_playlists;
         let group_btn = button(
@@ -652,9 +806,11 @@ impl App {
         let group_section = row![
             column![
                 text("Playlist folders").size(13),
-                text("Save playlist and album tracks into their own subfolder of the output folder.")
-                    .size(11)
-                    .style(t::muted_text),
+                text(
+                    "Save playlist and album tracks into their own subfolder of the output folder."
+                )
+                .size(11)
+                .style(t::muted_text),
             ]
             .spacing(3)
             .width(Length::Fill),
@@ -668,6 +824,8 @@ impl App {
                 output_section,
                 Space::new().height(12),
                 cookies_section,
+                Space::new().height(12),
+                skip_section,
                 Space::new().height(12),
                 group_section,
                 Space::new().height(12),
@@ -691,8 +849,14 @@ impl App {
 
     fn view_status_bar(&self) -> Element<'_, Message> {
         let status_text = text(self.status.as_str()).size(11).style(t::muted_text);
-        let done = self.tracks().filter(|i| i.status == ItemStatus::Done).count();
-        let unavailable = self.tracks().filter(|i| i.status == ItemStatus::Unavailable).count();
+        let done = self
+            .tracks()
+            .filter(|i| i.status == ItemStatus::Done)
+            .count();
+        let unavailable = self
+            .tracks()
+            .filter(|i| i.status == ItemStatus::Unavailable)
+            .count();
         let bad = self
             .tracks()
             .filter(|i| matches!(i.status, ItemStatus::Failed | ItemStatus::Stopped))
