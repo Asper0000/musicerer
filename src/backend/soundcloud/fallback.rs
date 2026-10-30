@@ -1,7 +1,7 @@
-use super::process;
-use super::tools::{self, Tool};
-use super::utils::USER_AGENT;
-use super::{log, Inbox, LogLevel, Source, TrackResult};
+use crate::backend::process;
+use crate::backend::tools::{self, Tool};
+use crate::backend::utils::USER_AGENT;
+use crate::backend::{log, Inbox, LogLevel, Source, TrackResult};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -149,7 +149,7 @@ fn try_fallback(
 
     let src_audio = ["mp3", "m4a", "opus", "webm", "wav"]
         .iter()
-        .find_map(|ext| super::utils::find_file_ext(temp_dir, ext))
+        .find_map(|ext| crate::backend::utils::find_file_ext(temp_dir, ext))
         .ok_or_else(|| "soundcloud tool produced no recognizable audio file".to_string())?;
 
     log(

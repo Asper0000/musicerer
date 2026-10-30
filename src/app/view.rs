@@ -222,42 +222,36 @@ impl App {
         let sc_icon = svg(svg::Handle::from_memory(ICON_SRC_SOUNDCLOUD))
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(48.0))
-            .style(|_, _| svg::Style {
-                color: Some(Color::from_rgb(1.0, 0.33, 0.0)),
-            });
+            .style(|_, _| svg::Style { color: Some(Color::from_rgb(1.0, 0.33, 0.0)) });
 
         let yt_icon = svg(svg::Handle::from_memory(ICON_SRC_YOUTUBE))
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(48.0))
-            .style(|_, _| svg::Style {
-                color: Some(Color::from_rgb(0.93, 0.20, 0.20)),
-            });
+            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.93, 0.20, 0.20)) });
 
         let sp_icon = svg(svg::Handle::from_memory(crate::ui::icons::ICON_SRC_SPOTIFY))
             .width(Length::Fixed(48.0))
             .height(Length::Fixed(48.0))
-            .style(|_, _| svg::Style {
-                color: Some(Color::from_rgb(0.114, 0.725, 0.329)),
-            });
+            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.114, 0.725, 0.329)) });
+
+        let dz_icon = svg(svg::Handle::from_memory(crate::ui::icons::ICON_SRC_DEEZER))
+            .width(Length::Fixed(48.0))
+            .height(Length::Fixed(48.0))
+            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.635, 0.220, 1.0)) });
 
         let platforms_row = row![
-            column![sc_icon, Space::new().height(8), text("SoundCloud").size(12)]
-                .align_x(Alignment::Center),
-            Space::new().width(40),
-            column![yt_icon, Space::new().height(8), text("YouTube").size(12)]
-                .align_x(Alignment::Center),
-            Space::new().width(40),
-            column![sp_icon, Space::new().height(8), text("Spotify").size(12)]
-                .align_x(Alignment::Center),
-        ]
-        .align_y(Alignment::Center);
+            column![sc_icon, Space::new().height(8), text("SoundCloud").size(12)].align_x(Alignment::Center),
+            Space::new().width(28),
+            column![yt_icon, Space::new().height(8), text("YouTube").size(12)].align_x(Alignment::Center),
+            Space::new().width(28),
+            column![sp_icon, Space::new().height(8), text("Spotify").size(12)].align_x(Alignment::Center),
+            Space::new().width(28),
+            column![dz_icon, Space::new().height(8), text("Deezer").size(12)].align_x(Alignment::Center),
+        ].align_y(Alignment::Center);
 
         let card = container(
             column![
-                text("Supported Platforms")
-                    .size(18)
-                    .width(Length::Fill)
-                    .align_x(Alignment::Center),
+                text("Supported Platforms").size(18).width(Length::Fill).align_x(Alignment::Center),
                 Space::new().height(12),
                 text("Musicerer currently supports downloading from these services:")
                     .size(13)
@@ -265,23 +259,27 @@ impl App {
                     .width(Length::Fill)
                     .align_x(Alignment::Center),
                 Space::new().height(24),
-                container(platforms_row)
+                container(platforms_row).width(Length::Fill).center_x(Length::Fill),
+                Space::new().height(16),
+                text("Individual tracks and playlists are supported on all four services.")
+                    .size(11)
+                    .style(t::muted_text)
                     .width(Length::Fill)
-                    .center_x(Length::Fill),
+                    .align_x(Alignment::Center),
                 Space::new().height(28),
-                row![
-                    Space::new().width(Length::Fill),
+                container(
                     button(text("Close").size(13))
                         .on_press(Message::TogglePlatformsDialog)
                         .style(t::primary_button)
                         .padding([10, 24]),
-                ],
+                )
+                .center_x(Length::Fill),
             ]
             .spacing(0),
         )
         .style(t::card_elevated)
         .padding(28)
-        .width(Length::Fixed(400.0));
+        .width(Length::Fixed(560.0));
 
         container(card)
             .width(Length::Fill)
@@ -289,12 +287,7 @@ impl App {
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(|_| iced::widget::container::Style {
-                background: Some(iced::Background::Color(Color {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.75,
-                })),
+                background: Some(iced::Background::Color(Color { r: 0.0, g: 0.0, b: 0.0, a: 0.75 })),
                 ..Default::default()
             })
             .into()

@@ -33,6 +33,7 @@ pub struct Job {
     pub attempts: u8,
     pub fallback_attempt: u8,
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
+    pub deezer: Option<crate::backend::deezer::DeezerMeta>,
     pub folder: Option<String>,
 }
 
@@ -45,6 +46,7 @@ impl Job {
             attempts: 0,
             fallback_attempt: 0,
             spotify: None,
+            deezer: None,
             folder: None,
         }
     }
@@ -123,11 +125,9 @@ impl AdaptiveLimit {
             })
             .is_ok();
         if consumed {
-            let _ = self
-                .current
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                    (current < self.max).then_some(current + 1)
-                });
+            let _ = self.current.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current < self.max).then_some(current + 1)
+            });
         }
     }
 
@@ -157,7 +157,13 @@ struct Shared {
     tally: Mutex<Tally>,
 }
 
-pub fn run_all<F, N>(jobs: Vec<Job>, workers: usize, stop: &AtomicBool, notify: N, run: F) -> Tally
+pub fn run_all<F, N>(
+    jobs: Vec<Job>,
+    workers: usize,
+    stop: &AtomicBool,
+    notify: N,
+    run: F,
+) -> Tally
 where
     F: Fn(&Job) -> Outcome + Sync,
     N: Fn(String) + Sync,

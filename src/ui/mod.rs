@@ -6,22 +6,10 @@ use crate::backend::Source;
 use iced::widget::image;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    Downloads,
-    Settings,
-}
+pub enum View { Downloads, Settings }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemStatus {
-    Pending,
-    Downloading,
-    Done,
-    Failed,
-    Unavailable,
-    DrmSkipped,
-    Skipped,
-    Stopped,
-}
+pub enum ItemStatus { Pending, Downloading, Done, Failed, Unavailable, DrmSkipped, Skipped, Stopped }
 
 impl ItemStatus {
     pub fn label(self) -> &'static str {
@@ -64,6 +52,7 @@ pub struct QueueItem {
     pub group: Option<PlaylistGroup>,
     pub resolved_url: Option<String>,
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
+    pub deezer: Option<crate::backend::deezer::DeezerMeta>,
     pub playlist_title: Option<String>,
 }
 
@@ -81,41 +70,42 @@ impl QueueItem {
             group: None,
             resolved_url: None,
             spotify: None,
+            deezer: None,
             playlist_title: None,
         }
     }
+
+    /// All downloadable tracks in this row. For a playlist header that's only
+    /// the children; for a single track that's the row itself.
     pub fn tracks(&self) -> impl Iterator<Item = &QueueItem> {
-        std::iter::once(self).chain(self.group.iter().flat_map(|g| g.children.iter()))
+        let is_header = self.group.is_some();
+        std::iter::once(self)
+            .filter(move |_| !is_header)
+            .chain(self.group.iter().flat_map(|g| g.children.iter()))
     }
+
     pub fn for_each_track_mut(&mut self, mut f: impl FnMut(&mut QueueItem)) {
-        f(self);
         if let Some(group) = &mut self.group {
-            group.children.iter_mut().for_each(f);
+            for child in &mut group.children {
+                f(child);
+            }
+        } else {
+            f(self);
         }
     }
+
     pub fn find_mut(&mut self, id: u64) -> Option<&mut QueueItem> {
         if self.id == id {
             return Some(self);
         }
-        self.group
-            .as_mut()?
-            .children
-            .iter_mut()
-            .find(|c| c.id == id)
+        self.group.as_mut()?.children.iter_mut().find(|c| c.id == id)
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum UiLogLevel {
-    Info,
-    Warn,
-    Error,
-}
+pub enum UiLogLevel { Info, Warn, Error }
 
 #[derive(Debug, Clone)]
-pub struct LogLine {
-    pub level: UiLogLevel,
-    pub text: String,
-}
+pub struct LogLine { pub level: UiLogLevel, pub text: String }
 
 pub use self::progress::custom_progress_bar;

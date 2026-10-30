@@ -2104,6 +2104,7 @@ dependencies = [
  "dirs",
  "iced",
  "image",
+ "mp4ameta",
  "rfd",
  "serde",
  "serde_json",

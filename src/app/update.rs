@@ -1,8 +1,8 @@
 use super::helpers::{fallback_name, guess_name_from_url, FETCHING_TITLE, READING_PLAYLIST};
 use super::{App, Message};
 use crate::backend::{
-    detect_source, is_playlist_url, normalize_url, spawn_preview, spawn_resolve, spawn_worker,
-    spotify, Source,
+    deezer, detect_source, is_playlist_url, normalize_url, spawn_preview, spawn_resolve,
+    spawn_worker, spotify, Source,
 };
 use crate::ui::{ItemStatus, QueueItem, ThumbState, UiLogLevel, View};
 
@@ -11,9 +11,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-/// A Spotify track whose audio could not be matched; there is nothing to download for it.
 fn is_unmatched(track: &QueueItem) -> bool {
-    track.spotify.is_some() && track.resolved_url.is_none()
+    (track.spotify.is_some() || track.deezer.is_some()) && track.resolved_url.is_none()
 }
 
 impl App {
@@ -152,7 +151,6 @@ impl App {
         }
     }
 
-    /// Logs a warning and makes sure the user sees it (opens the log, highlights its button).
     fn warn_visibly(&mut self, text: &str) {
         self.push_log(UiLogLevel::Warn, text);
         self.show_log = true;
@@ -181,11 +179,18 @@ impl App {
 
         let source = detect_source(&url);
         if source == Source::Unsupported {
-            self.warn_visibly("Only SoundCloud, YouTube and Spotify links are supported.");
+            self.warn_visibly("Only SoundCloud, YouTube, Spotify and Deezer links are supported.");
             return;
         }
         if source == Source::Spotify && !spotify::is_spotify_url(&url) {
             self.warn_visibly("Only Spotify track, album and playlist links are supported.");
+            return;
+        }
+        if source == Source::Deezer && !deezer::is_deezer_url(&url) {
+            self.warn_visibly(
+                "Only Deezer track, album and playlist links are supported. \
+                 Short links (link.deezer.com) are not supported — paste the full deezer.com URL.",
+            );
             return;
         }
 
@@ -202,6 +207,7 @@ impl App {
         self.next_id += 1;
         let is_playlist = match source {
             Source::Spotify => spotify::is_spotify_playlist_url(&url),
+            Source::Deezer => deezer::is_deezer_playlist_url(&url),
             _ => is_playlist_url(&url, source),
         };
         let display_name = if is_playlist {
@@ -223,6 +229,14 @@ impl App {
                     spotify::spawn_resolve_track(id, url, inbox, cancel);
                 }
             }
+            Source::Deezer => {
+                item.resolving = true;
+                if is_playlist {
+                    deezer::spawn_resolve_playlist(id, url, inbox, cancel);
+                } else {
+                    deezer::spawn_resolve_track(id, url, inbox, cancel);
+                }
+            }
             _ if is_playlist => {
                 item.resolving = true;
                 spawn_resolve(id, url, cookies, inbox, cancel);
@@ -238,16 +252,17 @@ impl App {
         if self.downloading {
             return;
         }
-        // Removing a playlist's main row removes the whole playlist.
+        // Removing a playlist header removes the whole playlist; removing a child
+        // only removes that one track.
         self.queue.retain(|i| i.id != id);
         for item in &mut self.queue {
             if let Some(group) = &mut item.group {
                 group.children.retain(|c| c.id != id);
-                if group.children.is_empty() {
-                    item.group = None;
-                }
             }
         }
+        // A header with no children left has nothing to show; drop it.
+        self.queue
+            .retain(|i| i.group.as_ref().is_none_or(|g| !g.children.is_empty()));
     }
 
     fn start_queue(&mut self) {
@@ -262,10 +277,7 @@ impl App {
             return;
         }
         if let Err(e) = std::fs::create_dir_all(&output_dir) {
-            self.push_log(
-                UiLogLevel::Error,
-                format!("Cannot create output folder: {e}"),
-            );
+            self.push_log(UiLogLevel::Error, format!("Cannot create output folder: {e}"));
             return;
         }
         let cookies = match self.cookies_path() {
@@ -280,23 +292,39 @@ impl App {
             }
         };
         if self.queue.iter().any(|i| i.resolving) {
-            self.push_log(
-                UiLogLevel::Warn,
-                "Wait for playlists to finish loading first.",
-            );
+            self.push_log(UiLogLevel::Warn, "Wait for playlists to finish loading first.");
             return;
         }
 
         let mut items = Vec::new();
+        let mut used_folders = std::collections::HashSet::new();
         for entry in &self.queue {
             let folder = if self.group_playlists {
-                entry.playlist_title.clone()
+                entry.playlist_title.as_ref().map(|title| {
+                    let base = crate::backend::sanitize_filename(title);
+                    let mut candidate = base.clone();
+                    let mut counter = 1;
+                    // Check both the current batch AND the filesystem to ensure
+                    // no existing folder is ever mixed with a new playlist.
+                    while used_folders.contains(&candidate) || output_dir.join(&candidate).is_dir() {
+                        candidate = format!("{} ({})", base, counter);
+                        counter += 1;
+                    }
+                    used_folders.insert(candidate.clone());
+                    candidate
+                })
             } else {
                 None
             };
             for t in entry.tracks().filter(|t| !is_unmatched(t)) {
                 let download_url = t.resolved_url.clone().unwrap_or_else(|| t.url.clone());
-                items.push((t.id, download_url, t.spotify.clone(), folder.clone()));
+                items.push((
+                    t.id,
+                    download_url,
+                    t.spotify.clone(),
+                    t.deezer.clone(),
+                    folder.clone(),
+                ));
             }
         }
         if items.is_empty() {
@@ -330,13 +358,10 @@ impl App {
         );
     }
 
-    /// Stops everything that is running: the download queue, playlist expansion,
-    /// previews and Spotify matching.
     fn stop_all(&mut self) {
         let was_resolving = self.queue.iter().any(|i| i.resolving);
 
         self.stop_flag.store(true, Ordering::SeqCst);
-        // Cancel every lookup in flight; later lookups get a fresh flag.
         self.resolve_cancel.store(true, Ordering::SeqCst);
         self.resolve_cancel = Arc::new(AtomicBool::new(false));
 
@@ -348,7 +373,6 @@ impl App {
                     item.display_name = "Playlist".to_string();
                 }
             }
-            // Cancelled lookups never report back, so settle their placeholders here.
             item.for_each_track_mut(|t| {
                 if matches!(t.thumbnail, ThumbState::Loading) {
                     t.thumbnail = ThumbState::Failed;

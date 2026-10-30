@@ -26,6 +26,7 @@ pub struct PlaylistEntry {
     pub title: String,
     pub thumb_url: Option<String>,
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
+    pub deezer: Option<crate::backend::deezer::DeezerMeta>,
 }
 
 struct Playlist {
@@ -35,43 +36,13 @@ struct Playlist {
 }
 
 pub fn is_playlist_url(url: &str, source: Source) -> bool {
-    let Ok(parsed) = url::Url::parse(url) else {
-        return false;
-    };
     match source {
-        Source::YouTube => parsed
-            .query_pairs()
-            .any(|(k, v)| k == "list" && !v.is_empty() && !v.starts_with("RD")),
-        Source::SoundCloud => {
-            let segments: Vec<&str> = parsed
-                .path_segments()
-                .map(|s| s.filter(|p| !p.is_empty()).collect())
-                .unwrap_or_default();
-            segments
-                .iter()
-                .position(|s| *s == "sets")
-                .is_some_and(|i| i + 1 < segments.len())
-        }
+        Source::YouTube => super::youtube::playlist::is_playlist_url(url),
+        Source::SoundCloud => super::soundcloud::playlist::is_playlist_url(url),
         Source::Spotify => false,
+        Source::Deezer => false,
         Source::Unsupported => false,
     }
-}
-
-fn youtube_video_id(url: &str) -> Option<String> {
-    let parsed = url::Url::parse(url).ok()?;
-    if parsed
-        .host_str()
-        .is_some_and(|h| h.eq_ignore_ascii_case("youtu.be"))
-    {
-        return parsed
-            .path_segments()?
-            .find(|s| !s.is_empty())
-            .map(String::from);
-    }
-    parsed
-        .query_pairs()
-        .find(|(k, _)| k == "v")
-        .map(|(_, v)| v.into_owned())
 }
 
 pub fn spawn_resolve(
@@ -107,7 +78,9 @@ fn fetch_playlist(
     inbox: &Inbox,
     cancel: &AtomicBool,
 ) -> Result<Playlist, String> {
-    let _permit = super::metadata_limit::acquire(cancel).ok_or_else(|| "cancelled".to_string())?;
+    let _permit = super::metadata_limit::acquire(cancel)
+        .ok_or_else(|| "cancelled".to_string())?;
+
     let mut cmd = tools::command(Tool::YtDlp);
     cmd.arg("--flat-playlist")
         .arg("--dump-single-json")
@@ -152,7 +125,7 @@ fn fetch_playlist(
         return Err("playlist has no downloadable tracks".to_string());
     }
 
-    let main = youtube_video_id(url)
+    let main = super::youtube::playlist::video_id_from_url(url)
         .and_then(|vid| entries.iter().position(|e| e.url.contains(&vid)))
         .unwrap_or(0);
     let title = root
@@ -169,6 +142,7 @@ fn fetch_playlist(
 
 fn parse_entry(entry: &Value) -> Option<PlaylistEntry> {
     let text = |key: &str| entry.get(key).and_then(Value::as_str);
+
     let title = text("title").unwrap_or("Untitled");
     if title.starts_with("[Private video]") || title.starts_with("[Deleted video]") {
         return None;
@@ -181,20 +155,23 @@ fn parse_entry(entry: &Value) -> Option<PlaylistEntry> {
         .find(|u| u.starts_with("http"))
         .map(String::from)
         .or_else(|| id.map(|i| format!("https://www.youtube.com/watch?v={i}")))?;
+
     let source = detect_source(&url);
     if source == Source::Unsupported {
         return None;
     }
 
     let thumb_url = match (source, id) {
-        (Source::YouTube, Some(id)) => Some(format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg")),
+        (Source::YouTube, Some(id)) => Some(super::youtube::playlist::thumbnail_url(id)),
         _ => pick_thumbnail(entry),
     };
+
     Some(PlaylistEntry {
         url,
         title: title.to_string(),
         thumb_url,
         spotify: None,
+        deezer: None,
     })
 }
 
@@ -219,6 +196,7 @@ pub fn spawn_thumbnails(jobs: Vec<(u64, String)>, inbox: Inbox) {
     let workers = THUMB_WORKERS.min(jobs.len());
     let jobs = Arc::new(jobs);
     let next = Arc::new(AtomicUsize::new(0));
+
     for _ in 0..workers {
         let (jobs, next, inbox) = (jobs.clone(), next.clone(), inbox.clone());
         thread::spawn(move || {
@@ -235,10 +213,7 @@ fn fetch_thumb(agent: &ureq::Agent, url: &str) -> Result<super::Thumb, String> {
     let response = agent
         .get(url)
         .set("User-Agent", USER_AGENT)
-        .set(
-            "Accept",
-            "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        )
+        .set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
         .call()
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();

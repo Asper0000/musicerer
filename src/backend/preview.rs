@@ -1,7 +1,7 @@
 use super::process;
 use super::{
     audio::{make_rounded_thumb, make_rounded_thumb_from_bytes},
-    detect_source, emit, soundcloud_fallback,
+    detect_source, emit, soundcloud_fallback, soundcloud_meta,
     tools::{self, Tool},
     Inbox, Source, Thumb, WorkerEvent,
 };
@@ -18,6 +18,7 @@ const PREVIEW_THUMB_RADIUS: f32 = 8.0;
 pub struct Preview {
     pub title: String,
     pub thumb: Option<Thumb>,
+    pub sc_meta: Option<soundcloud_meta::SoundCloudMeta>,
 }
 
 pub fn spawn_preview(
@@ -39,9 +40,11 @@ pub fn spawn_previews(
     if jobs.is_empty() {
         return;
     }
+
     let workers = PREVIEW_WORKERS.min(jobs.len());
     let jobs = Arc::new(jobs);
     let next = Arc::new(AtomicUsize::new(0));
+
     for _ in 0..workers {
         let (jobs, next, cookies, inbox, cancel) = (
             jobs.clone(),
@@ -67,6 +70,7 @@ pub fn spawn_previews(
                     id: *id,
                     title: p.title,
                     thumb: p.thumb,
+                    sc_meta: p.sc_meta,
                 },
                 Err(error) => WorkerEvent::PreviewFailed { id: *id, error },
             };
@@ -75,12 +79,10 @@ pub fn spawn_previews(
     }
 }
 
-fn fetch_preview(
-    url: &str,
-    cookies: Option<&Path>,
-    cancel: &AtomicBool,
-) -> Result<Preview, String> {
-    let _permit = super::metadata_limit::acquire(cancel).ok_or_else(|| "cancelled".to_string())?;
+fn fetch_preview(url: &str, cookies: Option<&Path>, cancel: &AtomicBool) -> Result<Preview, String> {
+    let _permit = super::metadata_limit::acquire(cancel)
+        .ok_or_else(|| "cancelled".to_string())?;
+
     let source = detect_source(url);
     let tmp = tempfile::Builder::new()
         .prefix("musicerer-preview-")
@@ -89,6 +91,7 @@ fn fetch_preview(
     let out_tpl = tmp.path().join("%(id)s.%(ext)s");
 
     let mut cmd = tools::command(Tool::YtDlp);
+
     cmd.arg("--skip-download")
         .arg("--write-thumbnail")
         .arg("--convert-thumbnails")
@@ -99,29 +102,37 @@ fn fetch_preview(
         .arg("--no-color")
         .arg("-o")
         .arg(&out_tpl);
+
     tools::add_ffmpeg_location(&mut cmd);
+
     if source == Source::YouTube {
-        cmd.arg("--js-runtimes")
-            .arg("deno")
-            .arg("--remote-components")
-            .arg("ejs:github")
-            .arg("--extractor-args")
-            .arg("youtube:player_client=default,web_embedded,tv");
+        super::youtube::preview::add_args(&mut cmd);
     }
     if let Some(c) = cookies {
         cmd.arg("--cookies").arg(c);
     }
     cmd.arg(url);
 
-    let output =
-        process::output_stoppable(&mut cmd, cancel).map_err(|e| format!("spawn failed: {e}"))?;
+    let output = process::output_stoppable(&mut cmd, cancel)
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+    // Best-effort SoundCloud hydration so the queue can show a real
+    // Artist - Title before download. Failure does not fail the preview:
+    // the download-time enrichment will re-fetch it.
+    let sc_meta = if source == Source::SoundCloud && !cancel.load(Ordering::Relaxed) {
+        soundcloud_meta::fetch(url).ok()
+    } else {
+        None
+    };
+
     if !output.status.success() {
         if source == Source::SoundCloud && !cancel.load(Ordering::Relaxed) {
             if let Ok((title, thumb_bytes)) = soundcloud_fallback::fetch_oembed(url) {
-                let thumb = thumb_bytes.as_deref().and_then(|b| {
-                    make_rounded_thumb_from_bytes(b, PREVIEW_THUMB_PX, PREVIEW_THUMB_RADIUS).ok()
+                let thumb = thumb_bytes.as_deref().and_then(|bytes| {
+                    make_rounded_thumb_from_bytes(bytes, PREVIEW_THUMB_PX, PREVIEW_THUMB_RADIUS)
+                        .ok()
                 });
-                return Ok(Preview { title, thumb });
+                return Ok(Preview { title, thumb, sc_meta });
             }
         }
         let err = String::from_utf8_lossy(&output.stderr);
@@ -135,6 +146,7 @@ fn fetch_preview(
 
     let mut title = "Untitled".to_string();
     let mut thumb = None;
+
     if let Ok(rd) = fs::read_dir(tmp.path()) {
         for entry in rd.flatten() {
             let p = entry.path();
@@ -154,5 +166,6 @@ fn fetch_preview(
             }
         }
     }
-    Ok(Preview { title, thumb })
+
+    Ok(Preview { title, thumb, sc_meta })
 }

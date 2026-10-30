@@ -10,7 +10,6 @@ enum RowKind {
     Child,
 }
 
-/// State of the little dropdown control on a playlist's main row.
 #[derive(Clone, Copy)]
 struct Dropdown {
     expanded: bool,
@@ -18,7 +17,36 @@ struct Dropdown {
     total: usize,
 }
 
-/// A queue entry: its main row, plus the collapsible list of playlist tracks if it has one.
+
+fn is_completed(status: ItemStatus) -> bool {
+    matches!(
+        status,
+        ItemStatus::Done
+            | ItemStatus::Failed
+            | ItemStatus::Unavailable
+            | ItemStatus::DrmSkipped
+            | ItemStatus::Skipped
+            | ItemStatus::Stopped
+    )
+}
+
+
+fn playlist_status(children: &[QueueItem], downloading: bool) -> ItemStatus {
+    if children.is_empty() {
+        return ItemStatus::Pending;
+    }
+    if children.iter().any(|c| matches!(c.status, ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped)) {
+        return ItemStatus::Failed;
+    }
+    if children.iter().all(|c| matches!(c.status, ItemStatus::Done | ItemStatus::Skipped)) {
+        return ItemStatus::Done;
+    }
+    if downloading || children.iter().any(|c| c.status == ItemStatus::Downloading) {
+        return ItemStatus::Downloading;
+    }
+    ItemStatus::Pending
+}
+
 pub fn queue_group<'a, M>(
     index: usize,
     item: &'a QueueItem,
@@ -33,20 +61,8 @@ where
     let group = item.group.as_ref().filter(|g| !g.children.is_empty());
     let dropdown = group.map(|g| Dropdown {
         expanded: g.expanded,
-        done: item
-            .tracks()
-            .filter(|t| {
-                matches!(
-                    t.status,
-                    ItemStatus::Done
-                        | ItemStatus::Failed
-                        | ItemStatus::Unavailable
-                        | ItemStatus::DrmSkipped
-                        | ItemStatus::Stopped
-                )
-            })
-            .count(),
-        total: g.children.len() + 1,
+        done: g.children.iter().filter(|c| is_completed(c.status)).count(),
+        total: g.children.len(),
     });
 
     let main = queue_row(
@@ -68,21 +84,13 @@ where
             .children
             .iter()
             .map(|child| {
-                queue_row(
-                    RowKind::Child,
-                    child,
-                    downloading,
-                    None,
-                    on_remove,
-                    on_toggle,
-                    tick,
-                )
+                queue_row(RowKind::Child, child, downloading, None, on_remove, on_toggle, tick)
             })
             .collect::<Vec<_>>(),
     )
     .spacing(3);
 
-    column![main, container(children).padding(0.0),]
+    column![main, container(children).padding(0.0)]
         .spacing(3)
         .into()
 }
@@ -99,21 +107,43 @@ fn queue_row<'a, M>(
 where
     M: Clone + 'a,
 {
-    let (status_color, status_icon) = match item.status {
-        ItemStatus::Pending => (theme::text_muted(), ICON_STATUS_PENDING),
-        ItemStatus::Downloading => (theme::primary(), ICON_STATUS_DOWNLOADING),
-        ItemStatus::Done => (theme::success(), ICON_STATUS_CHECK),
-        ItemStatus::Failed => (theme::danger(), ICON_STATUS_X),
-        ItemStatus::Unavailable => (theme::text_muted(), ICON_STATUS_X),
-        ItemStatus::DrmSkipped => (theme::text_muted(), ICON_STATUS_SLASH),
-        ItemStatus::Skipped => (theme::text_muted(), ICON_STATUS_SLASH),
-        ItemStatus::Stopped => (theme::danger(), ICON_STATUS_SQUARE),
+    let is_header = item.group.is_some();
+    let effective_status = if is_header {
+        item.group.as_ref().map_or(ItemStatus::Pending, |g| playlist_status(&g.children, downloading))
+    } else {
+        item.status
+    };
+
+    let (status_color, status_icon) = if is_header {
+        if item.resolving {
+            (theme::text_muted(), ICON_STATUS_PENDING)
+        } else {
+            match effective_status {
+                ItemStatus::Pending => (theme::text_muted(), ICON_STATUS_PENDING),
+                ItemStatus::Downloading => (theme::primary(), ICON_STATUS_DOWNLOADING),
+                ItemStatus::Done => (theme::success(), ICON_STATUS_CHECK),
+                ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped => (theme::danger(), ICON_STATUS_X),
+                _ => (theme::text_muted(), ICON_STATUS_PENDING),
+            }
+        }
+    } else {
+        match item.status {
+            ItemStatus::Pending => (theme::text_muted(), ICON_STATUS_PENDING),
+            ItemStatus::Downloading => (theme::primary(), ICON_STATUS_DOWNLOADING),
+            ItemStatus::Done => (theme::success(), ICON_STATUS_CHECK),
+            ItemStatus::Failed => (theme::danger(), ICON_STATUS_X),
+            ItemStatus::Unavailable => (theme::text_muted(), ICON_STATUS_X),
+            ItemStatus::DrmSkipped => (theme::text_muted(), ICON_STATUS_SLASH),
+            ItemStatus::Skipped => (theme::text_muted(), ICON_STATUS_SLASH),
+            ItemStatus::Stopped => (theme::danger(), ICON_STATUS_SQUARE),
+        }
     };
 
     let (source_icon, source_color) = match item.source {
         Source::YouTube => (ICON_SRC_YOUTUBE, Color::from_rgb(0.93, 0.20, 0.20)),
         Source::SoundCloud => (ICON_SRC_SOUNDCLOUD, Color::from_rgb(1.0, 0.33, 0.0)),
         Source::Spotify => (ICON_SRC_SPOTIFY, Color::from_rgb(0.114, 0.725, 0.329)),
+        Source::Deezer => (ICON_SRC_DEEZER, Color::from_rgb(0.635, 0.220, 1.0)),
         Source::Unsupported => (ICON_STATUS_PENDING, theme::text_muted()),
     };
 
@@ -179,9 +209,19 @@ where
     .center_y(Length::Fixed(16.0));
 
     let dots = ".".repeat((tick / 4 % 3 + 1) as usize);
-    let status_label: String = if item.resolving {
+    let status_label: String = if is_header {
+        let total = item.group.as_ref().map_or(0, |g| g.children.len());
+        let done = item.group.as_ref().map_or(0, |g| g.children.iter().filter(|c| is_completed(c.status)).count());
+        match effective_status {
+            ItemStatus::Downloading => format!("Downloading \u{00B7} {done}/{total}"),
+            ItemStatus::Done => format!("Done \u{00B7} {total} track{}", if total == 1 { "" } else { "s" }),
+            ItemStatus::Failed => format!("Errors \u{00B7} {total} track{}", if total == 1 { "" } else { "s" }),
+            _ => format!("Playlist \u{00B7} {total} track{}", if total == 1 { "" } else { "s" }),
+        }
+    } else if item.resolving {
         let is_playlist = match item.source {
             Source::Spotify => crate::backend::spotify::is_spotify_playlist_url(&item.url),
+            Source::Deezer => crate::backend::deezer::is_deezer_playlist_url(&item.url),
             other => crate::backend::is_playlist_url(&item.url, other),
         };
         let what = if is_playlist {
@@ -190,7 +230,7 @@ where
             "Fetching track"
         };
         format!("{what}{dots:<3}")
-    } else if item.spotify.is_some()
+    } else if (item.spotify.is_some() || item.deezer.is_some())
         && item.resolved_url.is_none()
         && item.status == ItemStatus::Pending
     {
@@ -200,6 +240,7 @@ where
     } else {
         item.status.label().to_string()
     };
+
     let subtitle = row![
         source_glyph,
         text(format!("{} \u{00B7} {}", status_label, item.source.label()))
@@ -228,16 +269,6 @@ where
         RowKind::Child => (Space::new().width(Length::Fixed(20.0)).into(), 54),
     };
 
-    let progress_text: Element<'a, M> = if item.resolving {
-        Space::new().width(Length::Fixed(36.0)).into()
-    } else {
-        text(format!("{:.0}%", item.progress * 100.0))
-            .size(11)
-            .width(Length::Fixed(36.0))
-            .style(theme::muted_text)
-            .into()
-    };
-
     let mut row_content = row![
         lead,
         status_glyph,
@@ -248,7 +279,6 @@ where
         ]
         .spacing(2)
         .width(Length::Fill),
-        progress_text,
     ]
     .spacing(8)
     .padding([6, 8])
@@ -305,7 +335,6 @@ where
     .into()
 }
 
-/// One frame of a rotating loading arc; `tick` advances the rotation by 45 degrees.
 fn spinner_icon(tick: u32) -> Vec<u8> {
     let angle = (tick % 8) * 45;
     format!(
