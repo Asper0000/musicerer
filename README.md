@@ -81,20 +81,57 @@ For SoundCloud items that `yt-dlp` reports as DRM-protected, officially compiled
 
 ## Building from source
 
-To build Musicerer, install the Rust toolchain and the required runtime dependencies.
+To build Musicerer, install the Rust toolchain and place the required runtime dependencies in the appropriate folders.
 
 ### Prerequisites
 
 - **Rust** 1.95 or newer
-- **yt-dlp**, **ffmpeg**/**ffprobe**, and **Deno** (required for some YouTube JavaScript challenges). These must be installed on your system and accessible via your `PATH`.
+
+### Setup (Windows)
+
+Put these files in a `tools/` folder at the project root:
+`yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`, `deno.exe`
+
+Then run:
+
+~~~bat
+build.bat            :: builds both versions
+build.bat bundled    :: builds only the all-in-one exe
+build.bat portable   :: builds only the slim exe
+~~~
+
+Results:
+- `dist\bundled\musicerer.exe` - Everything embedded; extracted on first use to `%TEMP%\musicerer-tools-<version>`.
+- `dist\portable\musicerer.exe` - Nothing embedded. Place the tools in `dist\portable\tools\` (or put them on `PATH`). If required tools are missing, the app still opens and shows a warning dialog listing them.
+
+The `bundled` build needs all four files present at compile time; the `portable` build compiles without them.
+
+### Setup (Linux)
+
+Linux packages are built from Windows through WSL, or directly on any Linux machine. Tools are never embedded in the executable on Linux; instead the packages ship them in a `tools` folder next to the real binary (`/usr/lib/musicerer/tools`), which Musicerer searches automatically.
+
+Put these **Linux** binaries in a `linux_tools/` folder at the project root:
+`yt-dlp`, `ffmpeg`, `ffprobe`, `deno`
+
+Then, from Windows:
+
+~~~bat
+build.bat linux        :: builds AppImage + .deb + .rpm
+build.bat appimage     :: or deb / rpm, individually
+build.bat all          :: builds Windows and Linux targets
+~~~
+
+On a native Linux machine, run `packaging/linux/build.sh [appimage] [deb] [rpm]` instead.
 
 ### Build (plain cargo)
+
+If you don't want to use the build scripts, you can compile directly:
 
 ~~~bash
 cargo build --release
 ~~~
 
-The executable will be at `target/release/musicerer`. 
+The executable will be at `target/release/musicerer`. Without a package, it looks for tools in a `tools` folder, then on `PATH`.
 
 *(Note: Building from source does not include the custom SoundCloud DRM fallback binary; that capability is exclusive to the officially compiled releases.)*
 
