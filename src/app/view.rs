@@ -141,7 +141,7 @@ impl App {
             .width(Length::Fixed(22.0))
             .height(Length::Fixed(22.0));
 
-        let title = text("Musicerer v0.2").size(13).style(t::muted_text_strong);
+        let title = text("Musicerer v0.3").size(13).style(t::muted_text_strong);
 
         let min_btn = button(
             container(
@@ -239,14 +239,27 @@ impl App {
             .height(Length::Fixed(48.0))
             .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.635, 0.220, 1.0)) });
 
+        let it_icon = svg(svg::Handle::from_memory(crate::ui::icons::ICON_SRC_ITUNES))
+            .width(Length::Fixed(48.0))
+            .height(Length::Fixed(48.0))
+            .style(|_, _| svg::Style { color: Some(Color::from_rgb(0.98, 0.24, 0.52)) });
+
+        let ytm_icon = svg(svg::Handle::from_memory(crate::ui::icons::ICON_SRC_YT_MUSIC))
+            .width(Length::Fixed(48.0))
+            .height(Length::Fixed(48.0));
+
         let platforms_row = row![
             column![sc_icon, Space::new().height(8), text("SoundCloud").size(12)].align_x(Alignment::Center),
-            Space::new().width(28),
+            Space::new().width(16),
             column![yt_icon, Space::new().height(8), text("YouTube").size(12)].align_x(Alignment::Center),
-            Space::new().width(28),
+            Space::new().width(16),
+            column![ytm_icon, Space::new().height(8), text("YT Music").size(12)].align_x(Alignment::Center),
+            Space::new().width(16),
             column![sp_icon, Space::new().height(8), text("Spotify").size(12)].align_x(Alignment::Center),
-            Space::new().width(28),
+            Space::new().width(16),
             column![dz_icon, Space::new().height(8), text("Deezer").size(12)].align_x(Alignment::Center),
+            Space::new().width(16),
+            column![it_icon, Space::new().height(8), text("Apple Music").size(12)].align_x(Alignment::Center),
         ].align_y(Alignment::Center);
 
         let card = container(
@@ -261,7 +274,7 @@ impl App {
                 Space::new().height(24),
                 container(platforms_row).width(Length::Fill).center_x(Length::Fill),
                 Space::new().height(16),
-                text("Individual tracks and playlists are supported on all four services.")
+                text("Individual tracks and playlists are supported on all six services.")
                     .size(11)
                     .style(t::muted_text)
                     .width(Length::Fill)
@@ -573,7 +586,25 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let download_all = button(text("Download All").size(13))
+        let has_run = self.tracks().any(|t| {
+            matches!(
+                t.status,
+                ItemStatus::Done
+                    | ItemStatus::Failed
+                    | ItemStatus::Unavailable
+                    | ItemStatus::DrmSkipped
+                    | ItemStatus::Skipped
+                    | ItemStatus::Stopped
+            )
+        });
+        
+        let btn_label = if !self.downloading && has_run {
+            "Retry All"
+        } else {
+            "Download All"
+        };
+
+        let download_all = button(text(btn_label).size(13))
             .on_press_maybe(
                 (!self.downloading && !self.queue.is_empty() && !resolving)
                     .then_some(Message::StartQueue),

@@ -1,6 +1,7 @@
 //! One-hop cross-backend metadata enrichment.
 
 use crate::backend::deezer::{self, DeezerMeta};
+use crate::backend::itunes::{self, ITunesMeta};
 use crate::backend::search_score;
 use crate::backend::soundcloud_meta::{self, SoundCloudMeta};
 use crate::backend::{log, Inbox, LogLevel, Source};
@@ -18,6 +19,7 @@ pub struct Enrichment {
     pub isrc: Option<String>,
     pub bpm: Option<f32>,
     pub gain: Option<f32>,
+    pub cover_url: Option<String>,
 }
 
 impl Enrichment {
@@ -32,6 +34,7 @@ impl Enrichment {
             && self.isrc.is_none()
             && self.bpm.is_none()
             && self.gain.is_none()
+            && self.cover_url.is_none()
     }
 }
 
@@ -52,6 +55,7 @@ pub fn for_download(
     audio_url: &str,
     job_spotify: Option<&crate::backend::spotify::SpotifyMeta>,
     job_deezer: Option<&DeezerMeta>,
+    job_itunes: Option<&crate::backend::itunes::ITunesMeta>,
     audio_source: Source,
     inbox: &Inbox,
     label: &str,
@@ -61,6 +65,8 @@ pub fn for_download(
         (dz.title.clone(), dz.artists.clone(), dz.duration_ms, Source::Deezer)
     } else if let Some(sp) = job_spotify {
         (sp.title.clone(), sp.artists.clone(), sp.duration_ms, Source::Spotify)
+    } else if let Some(it) = job_itunes {
+        (it.title.clone(), it.artists.clone(), it.duration_ms, Source::ITunes)
     } else {
         let (t, a, d, s) =
             crate::backend::tagging::enrichment_identity(audio_path, audio_source)?;
@@ -127,7 +133,7 @@ pub fn enrich(
     let mut result = Enrichment::default();
 
     // 1. Deezer Tier
-    if identity.meta_source != Source::Deezer {
+    if identity.meta_source != Source::Deezer && identity.meta_source != Source::ITunes {
         if cancel.load(Ordering::Relaxed) {
             return result;
         }
@@ -154,7 +160,25 @@ pub fn enrich(
         }
     }
 
-    // 2. SoundCloud Tier
+    // 2. iTunes Tier (Enriches Apple's pristine 3000x3000 art and exact album tags)
+    // Do not request iTunes solely for a cover, because the native source
+    // already has one (and it takes precedence). Only ask iTunes for album/year/genre gaps.
+    if identity.meta_source != Source::ITunes && (result.album.is_none() || result.year.is_none()) {
+        if cancel.load(Ordering::Relaxed) {
+            return result;
+        }
+        match itunes::search_track(identity.search_title, identity.artist, identity.search_duration) {
+            Ok(Some(it)) => merge_itunes(&mut result, &it),
+            Ok(None) => {}
+            Err(e) => log(
+                inbox,
+                LogLevel::Info,
+                format!("[{label}] iTunes enrichment: {e}"),
+            ),
+        }
+    }
+
+    // 3. SoundCloud Tier
     if identity.audio_source == Source::SoundCloud {
         if cancel.load(Ordering::Relaxed) {
             return result;
@@ -251,6 +275,34 @@ fn merge_deezer(result: &mut Enrichment, dz: &DeezerMeta) {
     if result.gain.is_none() {
         result.gain = dz.gain;
     }
+}
+
+fn merge_itunes(result: &mut Enrichment, it: &ITunesMeta) {
+    if result.album.is_none() {
+        result.album = it.album.clone();
+    }
+    if result.album_artist.is_none() {
+        result.album_artist = it.album_artist.clone();
+    }
+    if result.year.is_none() {
+        result.year = it
+            .release_date
+            .as_deref()
+            .and_then(|d| d.get(0..4))
+            .and_then(|y| y.parse::<i32>().ok());
+    }
+    if result.track_number.is_none() {
+        result.track_number = it.track_position;
+    }
+    if result.disc_number.is_none() {
+        result.disc_number = it.disk_number;
+    }
+    if result.genre.is_none() {
+        result.genre = it.genre.clone();
+    }
+    // We intentionally do not map the iTunes cover to the enrichment struct here.
+    // The native YouTube/SoundCloud cover will be used. 
+    // Direct iTunes downloads already get the 3000x3000 art via the direct meta path.
 }
 
 fn merge_soundcloud(result: &mut Enrichment, sc: &SoundCloudMeta) {

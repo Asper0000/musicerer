@@ -10,6 +10,7 @@ mod write;
 
 use crate::backend::deezer::{self, DeezerMeta};
 use crate::backend::enrich::Enrichment;
+use crate::backend::itunes::{self, ITunesMeta};
 use crate::backend::soundcloud_fallback;
 use crate::backend::soundcloud_meta;
 use crate::backend::spotify::{self, SpotifyMeta};
@@ -28,6 +29,7 @@ pub fn tag_audio(
     label: &str,
     spotify: Option<&SpotifyMeta>,
     deezer: Option<&DeezerMeta>,
+    itunes: Option<&ITunesMeta>,
     enrichment: Option<&Enrichment>,
 ) -> String {
     let native = native::extract(audio_path);
@@ -88,6 +90,17 @@ pub fn tag_audio(
         .and_then(|dz| dz.cover_url.as_deref())
         .and_then(|u| deezer::fetch_cover_bytes(u).ok())
         .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok());
+    let itunes_cover = itunes
+        .and_then(|it| it.cover_url.as_deref())
+        .and_then(|u| itunes::fetch_cover_bytes(u).ok())
+        .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok())
+        // If we don't have direct iTunes metadata, check the enrichment tier
+        .or_else(|| {
+            enrichment
+                .and_then(|e| e.cover_url.as_deref())
+                .and_then(|u| itunes::fetch_cover_bytes(u).ok())
+                .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok())
+        });
 
     let disk_cover = cover::from_disk(audio_path, inbox, label);
 
@@ -104,16 +117,18 @@ pub fn tag_audio(
         enrichment,
         spotify,
         deezer,
+        itunes,
         disk_cover,
         oembed_cover,
         spotify_cover,
         deezer_cover,
+        itunes_cover,
         fallback_filename,
     };
     let merged = merge::merge(&input);
 
     // Do not push a yt-dlp title into the UI when a metadata source owns this row.
-    if spotify.is_none() && deezer.is_none() {
+    if spotify.is_none() && deezer.is_none() && itunes.is_none() {
         emit(
             inbox,
             WorkerEvent::TrackTitle {

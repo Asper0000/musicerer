@@ -351,6 +351,48 @@ impl App {
                     child.thumbnail = ThumbState::Failed;
                 }
             }
+            WorkerEvent::ITunesResolved { id, meta, resolved_url, thumb } => {
+                let Some(i) = self.find_item_mut(id) else { return; };
+                if !i.resolving { return; }
+                i.resolving = false;
+                i.display_name = meta.display_title();
+                i.resolved_url = resolved_url;
+                i.itunes = Some(meta);
+                if let Some(thumb) = thumb {
+                    i.thumbnail = thumb_state(Some(thumb));
+                } else if matches!(i.thumbnail, ThumbState::Loading) {
+                    i.thumbnail = ThumbState::Failed;
+                }
+                if i.resolved_url.is_none() { i.status = ItemStatus::Failed; }
+            }
+            WorkerEvent::ITunesFailed { id, title, error } => {
+                let Some(i) = self.find_item_mut(id) else { return; };
+                if !i.resolving { return; }
+                i.resolving = false;
+                i.status = ItemStatus::Failed;
+                i.thumbnail = ThumbState::Failed;
+                if !title.is_empty() { i.display_name = title.clone(); }
+                self.push_log(UiLogLevel::Error, format!("iTunes resolve failed for \"{title}\": {error}"));
+                self.show_log = true;
+                self.log_attention = 16;
+            }
+            WorkerEvent::ITunesTrackMatched { parent_id, entry_index, url } => {
+                let Some(item) = self.find_item_mut(parent_id) else { return; };
+                let target = item.group.as_mut().and_then(|g| g.children.get_mut(entry_index));
+                let Some(child) = target else { return; };
+                if child.status == ItemStatus::Stopped { return; }
+                match url {
+                    Some(u) => { child.resolved_url = Some(u); }
+                    None => {
+                        child.resolved_url = None;
+                        child.status = ItemStatus::Failed;
+                    }
+                }
+            }
+            WorkerEvent::ITunesPlaylistComplete { parent_id } => {
+                if let Some(i) = self.find_item_mut(parent_id) { i.resolving = false; }
+                self.refresh_download_status();
+            }
             WorkerEvent::DeezerPlaylistComplete { parent_id } => {
                 if let Some(i) = self.find_item_mut(parent_id) {
                     i.resolving = false;
@@ -393,10 +435,13 @@ impl App {
 
             let is_spotify = entry.spotify.is_some();
             let is_deezer = entry.deezer.is_some();
+            let is_itunes = entry.itunes.is_some();
             let source = if is_spotify {
                 Source::Spotify
             } else if is_deezer {
                 Source::Deezer
+            } else if is_itunes {
+                Source::ITunes
             } else {
                 detect_source(&entry.url)
             };
@@ -413,13 +458,15 @@ impl App {
                 sp.display_title()
             } else if let Some(dz) = &entry.deezer {
                 dz.display_title()
+            } else if let Some(it) = &entry.itunes {
+                it.display_title()
             } else {
                 entry.title.clone()
             };
             let mut child = QueueItem::new(child_id, entry.url.clone(), source, child_title);
 
-            if is_spotify || is_deezer {
-                let prefix = if is_spotify { "spotify:" } else { "deezer:" };
+            if is_spotify || is_deezer || is_itunes {
+                let prefix = if is_spotify { "spotify:" } else if is_deezer { "deezer:" } else { "itunes:" };
                 if entry.url.starts_with(&format!("{prefix}pending")) {
                     // still resolving
                 } else if entry.url.starts_with(prefix) {
@@ -431,6 +478,7 @@ impl App {
 
             child.spotify = entry.spotify.clone();
             child.deezer = entry.deezer.clone();
+            child.itunes = entry.itunes.clone();
 
             if needs_track_preview {
                 child.thumbnail = ThumbState::Loading;
@@ -448,7 +496,7 @@ impl App {
         if let Some(item) = self.find_item_mut(id) {
             item.display_name = title.to_string();
             item.playlist_title = Some(title.to_string());
-            item.resolving = matches!(playlist_source, Source::Spotify | Source::Deezer);
+            item.resolving = matches!(playlist_source, Source::Spotify | Source::Deezer | Source::ITunes);
             item.thumbnail = if let Some(url) = &header_thumb_url {
                 thumb_jobs.push((id, url.clone()));
                 ThumbState::Loading

@@ -27,6 +27,7 @@ pub struct PlaylistEntry {
     pub thumb_url: Option<String>,
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
     pub deezer: Option<crate::backend::deezer::DeezerMeta>,
+    pub itunes: Option<crate::backend::itunes::ITunesMeta>,
 }
 
 struct Playlist {
@@ -41,6 +42,7 @@ pub fn is_playlist_url(url: &str, source: Source) -> bool {
         Source::SoundCloud => super::soundcloud::playlist::is_playlist_url(url),
         Source::Spotify => false,
         Source::Deezer => false,
+        Source::ITunes => false,
         Source::Unsupported => false,
     }
 }
@@ -172,6 +174,7 @@ fn parse_entry(entry: &Value) -> Option<PlaylistEntry> {
         thumb_url,
         spotify: None,
         deezer: None,
+        itunes: None,
     })
 }
 

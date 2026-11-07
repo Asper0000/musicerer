@@ -53,6 +53,7 @@ pub struct QueueItem {
     pub resolved_url: Option<String>,
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
     pub deezer: Option<crate::backend::deezer::DeezerMeta>,
+    pub itunes: Option<crate::backend::itunes::ITunesMeta>,
     pub playlist_title: Option<String>,
 }
 
@@ -71,6 +72,7 @@ impl QueueItem {
             resolved_url: None,
             spotify: None,
             deezer: None,
+            itunes: None,
             playlist_title: None,
         }
     }

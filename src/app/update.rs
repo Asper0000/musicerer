@@ -1,7 +1,7 @@
 use super::helpers::{fallback_name, guess_name_from_url, FETCHING_TITLE, READING_PLAYLIST};
 use super::{App, Message};
 use crate::backend::{
-    deezer, detect_source, is_playlist_url, normalize_url, spawn_preview, spawn_resolve,
+    deezer, detect_source, is_playlist_url, itunes, normalize_url, spawn_preview, spawn_resolve,
     spawn_worker, spotify, Source,
 };
 use crate::ui::{ItemStatus, QueueItem, ThumbState, UiLogLevel, View};
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 fn is_unmatched(track: &QueueItem) -> bool {
-    (track.spotify.is_some() || track.deezer.is_some()) && track.resolved_url.is_none()
+    (track.spotify.is_some() || track.deezer.is_some() || track.itunes.is_some()) && track.resolved_url.is_none()
 }
 
 impl App {
@@ -186,6 +186,10 @@ impl App {
             self.warn_visibly("Only Spotify track, album and playlist links are supported.");
             return;
         }
+        if source == Source::ITunes && !itunes::is_itunes_url(&url) {
+            self.warn_visibly("Only Apple Music track and album links are supported.");
+            return;
+        }
         if source == Source::Deezer && !deezer::is_deezer_url(&url) {
             self.warn_visibly(
                 "Only Deezer track, album and playlist links are supported. \
@@ -208,6 +212,7 @@ impl App {
         let is_playlist = match source {
             Source::Spotify => spotify::is_spotify_playlist_url(&url),
             Source::Deezer => deezer::is_deezer_playlist_url(&url),
+            Source::ITunes => itunes::is_itunes_playlist_url(&url),
             _ => is_playlist_url(&url, source),
         };
         let display_name = if is_playlist {
@@ -235,6 +240,14 @@ impl App {
                     deezer::spawn_resolve_playlist(id, url, inbox, cancel);
                 } else {
                     deezer::spawn_resolve_track(id, url, inbox, cancel);
+                }
+            }
+            Source::ITunes => {
+                item.resolving = true;
+                if is_playlist {
+                    itunes::spawn_resolve_playlist(id, url, inbox, cancel);
+                } else {
+                    itunes::spawn_resolve_track(id, url, inbox, cancel);
                 }
             }
             _ if is_playlist => {
@@ -323,6 +336,7 @@ impl App {
                     download_url,
                     t.spotify.clone(),
                     t.deezer.clone(),
+                    t.itunes.clone(),
                     folder.clone(),
                 ));
             }

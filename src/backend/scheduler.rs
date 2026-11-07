@@ -34,6 +34,7 @@ pub struct Job {
     pub fallback_attempt: u8,
     pub spotify: Option<crate::backend::spotify::SpotifyMeta>,
     pub deezer: Option<crate::backend::deezer::DeezerMeta>,
+    pub itunes: Option<crate::backend::itunes::ITunesMeta>,
     pub folder: Option<String>,
 }
 
@@ -47,6 +48,7 @@ impl Job {
             fallback_attempt: 0,
             spotify: None,
             deezer: None,
+            itunes: None,
             folder: None,
         }
     }

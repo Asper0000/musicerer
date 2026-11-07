@@ -144,6 +144,7 @@ where
         Source::SoundCloud => (ICON_SRC_SOUNDCLOUD, Color::from_rgb(1.0, 0.33, 0.0)),
         Source::Spotify => (ICON_SRC_SPOTIFY, Color::from_rgb(0.114, 0.725, 0.329)),
         Source::Deezer => (ICON_SRC_DEEZER, Color::from_rgb(0.635, 0.220, 1.0)),
+        Source::ITunes => (ICON_SRC_ITUNES, Color::from_rgb(0.98, 0.24, 0.52)),
         Source::Unsupported => (ICON_STATUS_PENDING, theme::text_muted()),
     };
 

@@ -166,6 +166,7 @@ fn run_playlist(id: u64, url: &str, inbox: &Inbox, cancel: &AtomicBool) {
             thumb_url: m.cover_url.clone(),
             spotify: Some(m.clone()),
             deezer: None,
+            itunes: None,
         })
         .collect();
     log(

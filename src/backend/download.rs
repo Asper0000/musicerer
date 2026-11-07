@@ -24,6 +24,7 @@ pub type QueueJob = (
     String,
     Option<SpotifyMeta>,
     Option<crate::backend::deezer::DeezerMeta>,
+    Option<crate::backend::itunes::ITunesMeta>,
     Option<String>,
 );
 
@@ -88,10 +89,11 @@ fn run_queue(
     let jobs = items
         .into_iter()
         .enumerate()
-        .map(|(i, (id, url, spotify, deezer, folder))| {
+        .map(|(i, (id, url, spotify, deezer, itunes, folder))| {
             let mut job = Job::new(id, url, format!("{}/{}", i + 1, total));
             job.spotify = spotify;
             job.deezer = deezer;
+            job.itunes = itunes;
             job.folder = folder;
             job
         })
@@ -321,7 +323,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
             youtube::download::add_args(&mut cmd, job.fallback_attempt, ctx.fragments)
         }
         Source::SoundCloud => soundcloud::download::add_args(&mut cmd),
-        Source::Spotify | Source::Deezer => {
+        Source::Spotify | Source::Deezer | Source::ITunes => {
             tlog(ctx, job, LogLevel::Error, "Metadata-source URL reached download without resolution.");
             return fin(TrackResult::Error);
         }
@@ -472,6 +474,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         url,
         job.spotify.as_ref(),
         job.deezer.as_ref(),
+        job.itunes.as_ref(),
         source,
         &ctx.inbox,
         &job.label,
@@ -485,6 +488,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         &job.label,
         job.spotify.as_ref(),
         job.deezer.as_ref(),
+        job.itunes.as_ref(),
         enrichment.as_ref(),
     );
 

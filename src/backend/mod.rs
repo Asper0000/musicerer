@@ -9,6 +9,7 @@ mod search_score;
 mod tagging;
 mod utils;
 pub mod deezer;
+pub mod itunes;
 pub mod enrich;
 pub mod enrich_cache;
 pub mod soundcloud;
@@ -34,7 +35,7 @@ pub type Inbox = Arc<Mutex<Vec<WorkerEvent>>>;
 pub enum TrackResult { Ok, Drm, Unavailable, Error, Skipped, Stopped }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source { SoundCloud, YouTube, Spotify, Deezer, Unsupported }
+pub enum Source { SoundCloud, YouTube, Spotify, Deezer, ITunes, Unsupported }
 
 impl Source {
     pub fn label(self) -> &'static str {
@@ -43,6 +44,7 @@ impl Source {
             Source::YouTube => "YouTube",
             Source::Spotify => "Spotify",
             Source::Deezer => "Deezer",
+            Source::ITunes => "iTunes",
             Source::Unsupported => "Unsupported",
         }
     }
@@ -68,6 +70,8 @@ pub fn detect_source(url: &str) -> Source {
         Source::Spotify
     } else if host == "deezer.com" || host.ends_with(".deezer.com") {
         Source::Deezer
+    } else if host == "music.apple.com" || host == "itunes.apple.com" {
+        Source::ITunes
     } else {
         Source::Unsupported
     }
@@ -108,6 +112,11 @@ pub enum WorkerEvent {
     DeezerFailed { id: u64, title: String, error: String },
     DeezerTrackResolved { parent_id: u64, entry_index: usize, meta: crate::backend::deezer::DeezerMeta, resolved_url: Option<String>, thumb: Option<Thumb> },
     DeezerPlaylistComplete { parent_id: u64 },
+
+    ITunesResolved { id: u64, meta: crate::backend::itunes::ITunesMeta, resolved_url: Option<String>, thumb: Option<Thumb> },
+    ITunesFailed { id: u64, title: String, error: String },
+    ITunesTrackMatched { parent_id: u64, entry_index: usize, url: Option<String> },
+    ITunesPlaylistComplete { parent_id: u64 },
 }
 
 pub(crate) fn emit(inbox: &Inbox, event: WorkerEvent) {

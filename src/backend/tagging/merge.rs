@@ -23,6 +23,7 @@
 
 use super::native::NativeMeta;
 use crate::backend::deezer::DeezerMeta;
+use crate::backend::itunes::ITunesMeta;
 use crate::backend::enrich::Enrichment;
 use crate::backend::soundcloud_meta::SoundCloudMeta;
 use crate::backend::spotify::SpotifyMeta;
@@ -42,10 +43,12 @@ pub struct MergeInput<'a> {
     pub enrichment: Option<&'a Enrichment>,
     pub spotify: Option<&'a SpotifyMeta>,
     pub deezer: Option<&'a DeezerMeta>,
+    pub itunes: Option<&'a ITunesMeta>,
     pub disk_cover: Option<Vec<u8>>,
     pub oembed_cover: Option<Vec<u8>>,
     pub spotify_cover: Option<Vec<u8>>,
     pub deezer_cover: Option<Vec<u8>>,
+    pub itunes_cover: Option<Vec<u8>>,
     pub fallback_filename: Option<String>,
 }
 
@@ -115,6 +118,9 @@ fn resolve_title(input: &MergeInput) -> String {
     if let Some(t) = input.deezer.and_then(|d| non_empty(&d.title)) {
         return t.to_string();
     }
+    if let Some(t) = input.itunes.and_then(|i| non_empty(&i.title)) {
+        return t.to_string();
+    }
     if let Some(t) = input.native.title.as_deref().and_then(non_empty) {
         return t.to_string();
     }
@@ -140,6 +146,9 @@ fn resolve_artist(input: &MergeInput) -> Option<String> {
     if let Some(a) = input.deezer.and_then(|d| non_empty(&d.artists)) {
         return Some(a.to_string());
     }
+    if let Some(a) = input.itunes.and_then(|i| non_empty(&i.artists)) {
+        return Some(a.to_string());
+    }
     if let Some(a) = input.sc.and_then(|s| s.artist.as_deref()).and_then(non_empty) {
         return Some(a.to_string());
     }
@@ -154,6 +163,9 @@ fn resolve_artist(input: &MergeInput) -> Option<String> {
 
 fn resolve_album(input: &MergeInput) -> Option<String> {
     if let Some(a) = input.deezer.and_then(|d| d.album.as_deref()).and_then(non_empty) {
+        return Some(a.to_string());
+    }
+    if let Some(a) = input.itunes.and_then(|i| i.album.as_deref()).and_then(non_empty) {
         return Some(a.to_string());
     }
     if let Some(a) = input.sc.and_then(|s| s.album_title.as_deref()).and_then(non_empty) {
@@ -175,6 +187,9 @@ fn resolve_year(input: &MergeInput) -> Option<i32> {
     if let Some(y) = input.deezer.and_then(|d| d.release_date.as_deref()).and_then(year_from_date) {
         return Some(y);
     }
+    if let Some(y) = input.itunes.and_then(|i| i.release_date.as_deref()).and_then(year_from_date) {
+        return Some(y);
+    }
     if let Some(y) = input.sc.and_then(|s| s.release_date.as_deref()).and_then(year_from_date) {
         return Some(y);
     }
@@ -191,6 +206,14 @@ fn resolve_track(input: &MergeInput) -> Option<i32> {
     if let Some(n) = input
         .deezer
         .and_then(|d| d.track_position)
+        .map(|n| n as i32)
+        .filter(|n| *n > 0)
+    {
+        return Some(n);
+    }
+    if let Some(n) = input
+        .itunes
+        .and_then(|i| i.track_position)
         .map(|n| n as i32)
         .filter(|n| *n > 0)
     {
@@ -220,6 +243,22 @@ fn resolve_disc(input: &MergeInput) -> Option<i32> {
         return Some(n);
     }
     if let Some(n) = input
+        .deezer
+        .and_then(|d| d.disk_number)
+        .map(|n| n as i32)
+        .filter(|n| *n > 0)
+    {
+        return Some(n);
+    }
+    if let Some(n) = input
+        .itunes
+        .and_then(|i| i.disk_number)
+        .map(|n| n as i32)
+        .filter(|n| *n > 0)
+    {
+        return Some(n);
+    }
+    if let Some(n) = input
         .enrichment
         .and_then(|e| e.disc_number)
         .map(|n| n as i32)
@@ -234,6 +273,9 @@ fn resolve_genre(input: &MergeInput) -> Option<String> {
     if let Some(g) = input.sc.and_then(|s| s.genre.as_deref()).and_then(non_empty) {
         return Some(g.to_string());
     }
+    if let Some(g) = input.itunes.and_then(|i| i.genre.as_deref()).and_then(non_empty) {
+        return Some(g.to_string());
+    }
     if let Some(g) = input.enrichment.and_then(|e| e.genre.as_deref()).and_then(non_empty) {
         return Some(g.to_string());
     }
@@ -244,6 +286,13 @@ fn resolve_album_artist(input: &MergeInput) -> Option<String> {
     if let Some(a) = input
         .deezer
         .and_then(|d| d.album_artist.as_deref())
+        .and_then(non_empty)
+    {
+        return Some(a.to_string());
+    }
+    if let Some(a) = input
+        .itunes
+        .and_then(|i| i.album_artist.as_deref())
         .and_then(non_empty)
     {
         return Some(a.to_string());
@@ -318,7 +367,11 @@ fn resolve_cover(input: &MergeInput) -> Option<Vec<u8>> {
     if let Some(c) = input.deezer_cover.as_deref() {
         return Some(c.to_vec());
     }
+    // Original source (disk) ALWAYS wins over enriched covers
     if let Some(c) = input.disk_cover.as_deref() {
+        return Some(c.to_vec());
+    }
+    if let Some(c) = input.itunes_cover.as_deref() {
         return Some(c.to_vec());
     }
     if let Some(c) = input.existing.and_then(|e| e.cover.as_deref()) {
