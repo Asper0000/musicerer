@@ -46,7 +46,31 @@ impl App {
         }
     }
 
+    /// A playlist header waiting on a child cover gives up once no child is
+    /// still loading one, so it never spins forever.
+    fn settle_header_thumbs(&mut self) {
+        for parent in &mut self.queue {
+            let Some(group) = &parent.group else { continue; };
+            if !matches!(parent.thumbnail, ThumbState::Loading) {
+                continue;
+            }
+            if group.children.iter().any(|c| matches!(c.thumbnail, ThumbState::Loading)) {
+                continue;
+            }
+            parent.thumbnail = group
+                .children
+                .iter()
+                .find(|c| matches!(c.thumbnail, ThumbState::Ready(_)))
+                .map_or(ThumbState::Failed, |c| c.thumbnail.clone());
+        }
+    }
+
     pub(super) fn handle_worker_event(&mut self, event: WorkerEvent) {
+        self.handle_event_inner(event);
+        self.settle_header_thumbs();
+    }
+
+    fn handle_event_inner(&mut self, event: WorkerEvent) {
         match event {
             WorkerEvent::TrackStarted { id } => {
                 if let Some(i) = self.find_item_mut(id) {
@@ -57,7 +81,7 @@ impl App {
             }
             WorkerEvent::TrackTitle { id, title } => {
                 if let Some(i) = self.find_item_mut(id) {
-                    if i.spotify.is_none() && i.deezer.is_none() {
+                    if !i.uses_metadata_source() {
                         i.display_name = title;
                     }
                 }
@@ -69,10 +93,15 @@ impl App {
             }
             WorkerEvent::Thumbnail { id, thumb } => {
                 if let Some(i) = self.find_item_mut(id) {
-                    let keep_metadata_cover =
-                        (i.spotify.is_some() || i.deezer.is_some())
-                            && matches!(i.thumbnail, ThumbState::Ready(_));
-                    if !keep_metadata_cover {
+                    let has_cover = matches!(i.thumbnail, ThumbState::Ready(_));
+                    // Metadata rows keep a cover they already have. A Deezer
+                    // row is always followed by DeezerTrackResolved, which sets
+                    // its final cover, so a failed early fetch must not flash
+                    // the failure icon in the meantime.
+                    let keep = i.uses_metadata_source()
+                        && (has_cover
+                            || (thumb.is_none() && i.deezer.is_some() && i.awaiting_match()));
+                    if !keep {
                         i.thumbnail = thumb_state(thumb.clone());
                     }
                 }
@@ -93,7 +122,6 @@ impl App {
                             i.progress = 1.0;
                             ItemStatus::Done
                         }
-                        TrackResult::Drm => ItemStatus::DrmSkipped,
                         TrackResult::Unavailable => ItemStatus::Unavailable,
                         TrackResult::Error => ItemStatus::Failed,
                         TrackResult::Skipped => {
@@ -109,24 +137,28 @@ impl App {
                 succeeded,
                 failed,
                 unavailable,
-                drm,
                 skipped,
                 stopped,
             } => {
                 self.downloading = false;
                 let verb = if stopped { "Stopped" } else { "Done" };
                 self.status = format!(
-                    "{verb} \u{2014} {succeeded} succeeded, {failed} failed, {unavailable} unavailable, {drm} DRM-skipped, {skipped} skipped"
+                    "{verb} \u{2014} {succeeded} succeeded, {failed} failed, {unavailable} unavailable, {skipped} skipped"
                 );
                 self.push_log(UiLogLevel::Info, self.status.clone());
                 self.update_disk_space();
+                // Every track errored: surface the log so the cause is visible.
+                if !stopped && succeeded == 0 && skipped == 0 && failed + unavailable > 0 {
+                    self.log_attention = 16;
+                    self.needs_log_window = true;
+                }
             }
             WorkerEvent::PreviewReady { id, title, thumb, sc_meta } => {
                 self.update_parent_thumbnail(id, thumb.clone());
                 let Some(i) = self.find_item_mut(id) else {
                     return;
                 };
-                if i.spotify.is_some() || i.deezer.is_some() {
+                if i.uses_metadata_source() {
                     return;
                 }
                 // SoundCloud hydration carries publisher_metadata, so the
@@ -232,8 +264,8 @@ impl App {
                     UiLogLevel::Error,
                     format!("Spotify resolve failed for \"{title}\": {error}"),
                 );
-                self.show_log = true;
                 self.log_attention = 16;
+                self.needs_log_window = true;
             }
             WorkerEvent::SpotifyTrackMatched {
                 parent_id,
@@ -311,8 +343,8 @@ impl App {
                     UiLogLevel::Error,
                     format!("Deezer resolve failed for \"{title}\": {error}"),
                 );
-                self.show_log = true;
                 self.log_attention = 16;
+                self.needs_log_window = true;
             }
             WorkerEvent::DeezerTrackResolved {
                 parent_id,
@@ -373,8 +405,8 @@ impl App {
                 i.thumbnail = ThumbState::Failed;
                 if !title.is_empty() { i.display_name = title.clone(); }
                 self.push_log(UiLogLevel::Error, format!("iTunes resolve failed for \"{title}\": {error}"));
-                self.show_log = true;
                 self.log_attention = 16;
+                self.needs_log_window = true;
             }
             WorkerEvent::ITunesTrackMatched { parent_id, entry_index, url } => {
                 let Some(item) = self.find_item_mut(parent_id) else { return; };
@@ -423,7 +455,13 @@ impl App {
             return;
         }
 
-        let header_thumb_url = entries.iter().find_map(|e| e.thumb_url.clone());
+        // SoundCloud entries often carry the artist avatar; skip it so the header
+        // doesn't show it and then swap to a real cover.
+        let header_thumb_url = entries
+            .iter()
+            .filter_map(|e| e.thumb_url.as_deref())
+            .find(|u| !is_artist_avatar_thumb(u))
+            .map(str::to_string);
 
         let mut preview_jobs = Vec::new();
         let mut thumb_jobs: Vec<(u64, String)> = Vec::with_capacity(entries.len() + 1);
@@ -501,9 +539,9 @@ impl App {
                 thumb_jobs.push((id, url.clone()));
                 ThumbState::Loading
             } else {
-                // Default to Failed. It will be overwritten instantly by a
-                // child's thumbnail when one loads (see update_parent_thumbnail).
-                ThumbState::Failed
+                // Wait for a child's cover (see update_parent_thumbnail); the
+                // header settles to Failed if none arrives (settle_header_thumbs).
+                ThumbState::Loading
             };
             if !children.is_empty() {
                 item.group = Some(PlaylistGroup {

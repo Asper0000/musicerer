@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Builds dist/linux/appimage/Musicerer-<version>-<arch>.AppImage from the staged payload. Sourced by build.sh.
 
-# Uses linux_tools/appimagetool if you placed one there (offline builds), else downloads and caches it.
+# Downloads and caches appimagetool as a build-time dependency; it is not shipped with Musicerer.
 get_appimagetool() {
-    if [[ -x "$TOOLS_SRC/appimagetool" ]]; then APPIMAGETOOL="$TOOLS_SRC/appimagetool"; return; fi
     APPIMAGETOOL="$CACHE_DIR/appimagetool-$RPM_ARCH.AppImage"
     if [[ ! -x "$APPIMAGETOOL" ]]; then
         need curl "Install it with: sudo apt install curl"
@@ -11,7 +10,7 @@ get_appimagetool() {
         mkdir -p "$CACHE_DIR"
         curl -fsSL -o "$APPIMAGETOOL.part" \
             "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$RPM_ARCH.AppImage" \
-            || die "Could not download appimagetool. Put an 'appimagetool' binary in ${TOOLS_SRC##*/}/ to build offline."
+            || die "Could not download appimagetool. check your network connection or install appimagetool manually in $CACHE_DIR."
         mv "$APPIMAGETOOL.part" "$APPIMAGETOOL" && chmod +x "$APPIMAGETOOL"
     fi
 }

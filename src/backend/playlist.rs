@@ -203,7 +203,7 @@ pub fn spawn_thumbnails(jobs: Vec<(u64, String)>, inbox: Inbox) {
     for _ in 0..workers {
         let (jobs, next, inbox) = (jobs.clone(), next.clone(), inbox.clone());
         thread::spawn(move || {
-            let agent = ureq::AgentBuilder::new().timeout(THUMB_TIMEOUT).build();
+            let agent = crate::backend::http::agent_with_global_timeout(None, THUMB_TIMEOUT);
             while let Some((id, url)) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                 let thumb = fetch_thumb(&agent, url).ok();
                 emit(&inbox, WorkerEvent::Thumbnail { id: *id, thumb });
@@ -213,15 +213,15 @@ pub fn spawn_thumbnails(jobs: Vec<(u64, String)>, inbox: Inbox) {
 }
 
 fn fetch_thumb(agent: &ureq::Agent, url: &str) -> Result<super::Thumb, String> {
-    let response = agent
+    let mut response = agent
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
         .call()
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
     response
-        .into_reader()
+        .body_mut().as_reader()
         .take(THUMB_MAX_BYTES)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;

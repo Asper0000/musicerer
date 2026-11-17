@@ -1,4 +1,4 @@
 #!/bin/sh
-# The app finds its bundled tools through the "tools" folder next to its real executable.
+# Runtime media tools are downloaded by Musicerer or resolved from the user's PATH.
 HERE="$(dirname "$(readlink -f "$0")")"
 exec "$HERE/usr/lib/musicerer/musicerer" "$@"

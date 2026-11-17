@@ -3,7 +3,7 @@
 #
 #   packaging/linux/build.sh [appimage] [deb] [rpm]     (no argument = all three)
 #
-# Needs: a Linux Rust toolchain, the five binaries in ./linux_tools, and per format:
+# Needs: a Linux Rust toolchain and per format:
 #   deb: dpkg-deb    rpm: rpmbuild    appimage: curl (to fetch appimagetool once)
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -18,14 +18,13 @@ for t in "${targets[@]}"; do
 done
 
 # Fail fast, before the slow compile.
-check_tools
 require_linux_cargo
 check_build_deps
 for t in "${targets[@]}"; do
     case "$t" in
         deb) need dpkg-deb "Install it with: sudo apt install dpkg" ;;
         rpm) need rpmbuild "Install it with: sudo apt install rpm   (Fedora: sudo dnf install rpm-build)" ;;
-        appimage) [[ -x "$TOOLS_SRC/appimagetool" ]] || need curl "Install it with: sudo apt install curl" ;;
+        appimage) need curl "Install it with: sudo apt install curl" ;;
     esac
 done
 

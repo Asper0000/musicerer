@@ -1,5 +1,5 @@
 use iced::theme::{Palette, Theme};
-use iced::widget::{button, container, text, text_input};
+use iced::widget::{button, checkbox, container, text, text_input};
 use iced::{border::Radius, Background, Border, Color};
 
 pub fn app_theme() -> Theme {
@@ -152,6 +152,41 @@ pub fn muted_text_strong(_: &Theme) -> text::Style {
     }
 }
 
+
+pub fn dialog_checkbox(_: &Theme, status: checkbox::Status) -> checkbox::Style {
+    let (checked, hovered, disabled) = match status {
+        checkbox::Status::Active { is_checked } => (is_checked, false, false),
+        checkbox::Status::Hovered { is_checked } => (is_checked, true, false),
+        checkbox::Status::Disabled { is_checked } => (is_checked, false, true),
+    };
+
+    let background = if checked {
+        primary()
+    } else if hovered {
+        surface_elevated()
+    } else {
+        surface_nested()
+    };
+    let border_color = if checked {
+        primary()
+    } else if hovered {
+        text_secondary()
+    } else {
+        border_strong()
+    };
+
+    checkbox::Style {
+        background: Background::Color(background),
+        icon_color: Color::WHITE,
+        border: Border {
+            color: if disabled { border_subtle() } else { border_color },
+            width: 1.0,
+            radius: 3.0.into(),
+        },
+        text_color: Some(if disabled { text_secondary() } else { text_primary() }),
+    }
+}
+
 pub fn text_input_style(_: &Theme, _status: text_input::Status) -> text_input::Style {
     text_input::Style {
         background: Background::Color(Color::TRANSPARENT),
@@ -184,6 +219,21 @@ pub fn primary_button(_: &Theme, status: button::Status) -> button::Style {
             text_color: text_muted(),
             ..base
         },
+        _ => base,
+    }
+}
+
+pub fn update_check_button(_: &Theme, status: button::Status) -> button::Style {
+    let base = button::Style {
+        background: Some(Background::Color(Color::from_rgba(0.72, 0.55, 0.10, 0.5))),
+        text_color: text_primary(),
+        border: border(Color::from_rgb(0.72, 0.55, 0.10), 1.0, 6.0),
+        ..Default::default()
+    };
+    match status {
+        button::Status::Hovered => button::Style { background: Some(Background::Color(Color::from_rgba(0.80, 0.62, 0.13, 0.5))), ..base },
+        button::Status::Pressed => button::Style { background: Some(Background::Color(Color::from_rgba(0.62, 0.46, 0.08, 0.5))), ..base },
+        button::Status::Disabled => button::Style { background: Some(Background::Color(surface())), text_color: text_muted(), border: border(border_subtle(), 1.0, 6.0), ..base },
         _ => base,
     }
 }

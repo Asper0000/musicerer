@@ -26,21 +26,14 @@ fn warn_about_missing_tools() {
 
 fn main() -> iced::Result {
     backend::cleanup_stale_temp_dirs();
+    backend::updater::cleanup_after_update();
     warn_about_missing_tools();
 
-    let icon = iced::window::icon::from_file_data(WINDOW_ICON, None).ok();
+    let _ = WINDOW_ICON; // Icon is now handled in App::new
 
-    iced::application(App::new, App::update, App::view)
-        .title("Musicerer")
+    iced::daemon(App::new, App::update, App::view)
+        .title(App::title)
         .theme(App::theme)
         .subscription(App::subscription)
-        .window(iced::window::Settings {
-            size: iced::Size::new(740.0, 480.0),
-            min_size: Some(iced::Size::new(600.0, 480.0)),
-            decorations: false,
-            transparent: true,
-            icon,
-            ..Default::default()
-        })
         .run()
 }

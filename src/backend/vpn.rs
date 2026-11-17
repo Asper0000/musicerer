@@ -58,7 +58,9 @@ const VPN_PROCESS_PATTERNS: &[&str] = &[
 ];
 
 pub fn detect() -> VpnInfo {
-    let mut sys = System::new();
+    let Ok(mut sys) = System::new() else {
+        return VpnInfo::default();
+    };
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
     let mut matches: Vec<String> = Vec::new();

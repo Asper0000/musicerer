@@ -1,11 +1,13 @@
 mod events;
 mod helpers;
+mod installation;
 mod update;
 mod view;
 
+use crate::backend::updater::{self, Component};
 use crate::backend::vpn::{self, VpnInfo};
 use crate::theme;
-use crate::ui::{ItemStatus, LogLine, QueueItem, ThumbState, View};
+use crate::ui::{ItemStatus, LogLine, QueueItem, View};
 
 use iced::{Subscription, Task, Theme};
 use std::collections::VecDeque;
@@ -46,6 +48,7 @@ pub enum Message {
     BrowseOutputDir,
     OutputDirPicked(Option<PathBuf>),
     OpenOutputDir,
+    OpenInstallationDirectory(PathBuf),
     CookiesChanged(String),
     BrowseCookies,
     CookiesPicked(Option<PathBuf>),
@@ -54,16 +57,47 @@ pub enum Message {
     StartQueue,
     StopQueue,
     SwitchView(View),
-    ToggleLog,
+
+    CheckUpdates,
+    AskAppUpdate,
+    CancelAppUpdate,
+    InstallUpdate(Component),
+    InstallExternalTools,
+    InstallManagedTool(Component),
+    ReinstallManagedTool(Component),
+    UninstallManagedTool(Component),
+    AskAppReinstall,
+    CancelAppReinstall,
+    InstallAppReinstall,
+    OpenUninstallDialog,
+    CloseUninstallDialog,
+    SetKeepSettings(bool),
+    SetKeepTools(bool),
+    SetKeepCache(bool),
+    SetKeepLogs(bool),
+    SetKeepOtherData(bool),
+    SetKeepOutputDirectory(bool),
+    ConfirmUninstall,
+    UpdatePromptView,
+    DismissUpdatePrompt,
+
     TogglePlatformsDialog,
     DismissVpnWarning,
     SuppressVpnWarning,
     PollWorker,
-    WindowDragged,
-    WindowMinimize,
-    WindowMaximize,
-    WindowClose,
-    WindowResize(iced::window::Direction),
+    WindowDragged(iced::window::Id),
+    WindowMinimize(iced::window::Id),
+    WindowMaximize(iced::window::Id),
+    WindowClose(iced::window::Id),
+    WindowResize(iced::window::Id, iced::window::Direction),
+    WindowEvent(iced::window::Id, iced::window::Event),
+    OpenLogWindow,
+    CloseLogWindow,
+    #[allow(dead_code)]
+    LogWindowOpened(iced::window::Id),
+    Noop,
+    #[allow(dead_code)]
+    MainWindowOpened(iced::window::Id),
 }
 
 pub struct App {
@@ -83,7 +117,9 @@ pub struct App {
     pub(crate) next_id: u64,
     pub(crate) downloading: bool,
     pub(crate) status: String,
-    pub(crate) show_log: bool,
+    pub(crate) needs_log_window: bool,
+    pub(crate) log_window_id: Option<iced::window::Id>,
+    pub(crate) main_window_id: Option<iced::window::Id>,
     /// Frames left to highlight the Log button (set when a user-facing error is logged).
     pub(crate) log_attention: u8,
     pub(crate) show_platforms: bool,
@@ -94,6 +130,18 @@ pub struct App {
     /// Shared by every lookup in flight (playlist expansion, previews, Spotify matching).
     /// Stop raises it and installs a fresh one for lookups started afterwards.
     pub(crate) resolve_cancel: Arc<AtomicBool>,
+    /// Shared state of the update checker / installer threads.
+    pub(crate) updater: updater::Handle,
+    /// Last updater generation the UI has drawn.
+    pub(crate) updater_seen: u64,
+    /// Startup prompt: a newer Musicerer release exists.
+    pub(crate) update_prompt: bool,
+    /// The Musicerer row is asking "restart and update?".
+    pub(crate) confirm_app_update: bool,
+    pub(crate) confirm_app_reinstall: bool,
+    pub(crate) installation_info: updater::InstallationInfo,
+    pub(crate) show_uninstall_dialog: bool,
+    pub(crate) uninstall_options: updater::UninstallOptions,
 }
 
 impl App {
@@ -115,6 +163,10 @@ impl App {
             .to_string_lossy()
             .to_string();
 
+        let updater_handle = updater::new_handle();
+        let installation_info = updater::installation_info();
+        updater::spawn_check_all(&updater_handle, true);
+
         let mut app = Self {
             current_view: View::Downloads,
             url_input: String::new(),
@@ -130,39 +182,95 @@ impl App {
             next_id: 1,
             downloading: false,
             status: "Ready".to_string(),
-            show_log: false,
+            needs_log_window: false,
+            log_window_id: None,
+            main_window_id: None,
             log_attention: 0,
             show_platforms: false,
             startup_vpn_warning,
             inbox: Arc::new(Mutex::new(Vec::new())),
             stop_flag: Arc::new(AtomicBool::new(false)),
             resolve_cancel: Arc::new(AtomicBool::new(false)),
+            updater: updater_handle,
+            updater_seen: 0,
+            update_prompt: false,
+            confirm_app_update: false,
+            confirm_app_reinstall: false,
+            installation_info,
+            show_uninstall_dialog: false,
+            uninstall_options: updater::UninstallOptions::default(),
         };
 
         app.update_disk_space();
 
-        (app, Task::none())
+        let window_settings = iced::window::Settings {
+            size: iced::Size::new(740.0, 480.0),
+            min_size: Some(iced::Size::new(600.0, 480.0)),
+            decorations: false,
+            transparent: true,
+            icon: iced::window::icon::from_file_data(include_bytes!("../../assets/icon.ico"), None).ok(),
+            ..Default::default()
+        };
+        let (id, task) = iced::window::open(window_settings);
+        app.main_window_id = Some(id);
+        (app, task.map(|_| Message::Noop))
     }
 
-    pub fn theme(&self) -> Theme {
+    pub fn title(&self, window_id: iced::window::Id) -> String {
+        if Some(window_id) == self.log_window_id {
+            "Musicerer - Log".to_string()
+        } else {
+            "Musicerer".to_string()
+        }
+    }
+
+    pub fn theme(&self, _window_id: iced::window::Id) -> Theme {
         theme::app_theme()
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let mut subs = vec![
+            iced::window::events().map(|(id, event)| Message::WindowEvent(id, event)),
+        ];
         if self.is_active() {
-            iced::time::every(Duration::from_millis(120)).map(|_| Message::PollWorker)
-        } else {
-            Subscription::none()
+            subs.push(iced::time::every(Duration::from_millis(120)).map(|_| Message::PollWorker));
         }
+        Subscription::batch(subs)
     }
 
     fn is_active(&self) -> bool {
         self.downloading
-            || self.queue.iter().any(|i| {
-                i.resolving
-                    || i.tracks()
-                        .any(|t| matches!(t.thumbnail, ThumbState::Loading))
-            })
+            || self.is_loading()
+            || updater::is_busy(&self.updater)
+            || updater::generation(&self.updater) != self.updater_seen
+    }
+
+    /// Something in the queue is still loading (playlist expansion, metadata,
+    /// audio matching or covers). Downloading and retrying wait for it.
+    pub(crate) fn is_loading(&self) -> bool {
+        self.queue
+            .iter()
+            .any(|i| i.resolving || i.tracks().any(QueueItem::is_loading))
+    }
+
+    /// True when the main button should read "Retry All": a download run left
+    /// at least one track failed, unavailable or stopped, and nothing new is
+    /// waiting to be downloaded. Metadata and matching failures never count.
+    pub(crate) fn is_retry_mode(&self) -> bool {
+        if self.downloading || self.is_loading() {
+            return false;
+        }
+        let mut any_retryable = false;
+        for t in self.tracks() {
+            if t.unmatched() {
+                continue;
+            }
+            if t.status == ItemStatus::Pending {
+                return false;
+            }
+            any_retryable |= t.needs_retry();
+        }
+        any_retryable
     }
 
     /// Every downloadable track in the queue: playlist children included.
@@ -184,7 +292,6 @@ impl App {
                 ItemStatus::Done
                 | ItemStatus::Failed
                 | ItemStatus::Unavailable
-                | ItemStatus::DrmSkipped
                 | ItemStatus::Stopped => 1.0,
                 _ => t.progress,
             };
@@ -226,7 +333,10 @@ impl App {
     }
 
     fn update_disk_space(&mut self) {
-        let disks = sysinfo::Disks::new_with_refreshed_list();
+        let Ok(disks) = sysinfo::Disks::new_with_refreshed_list() else {
+            self.available_space = "Unknown".to_string();
+            return;
+        };
         let path = std::path::Path::new(&self.output_dir);
         let mut best_disk = None;
         let mut max_len = 0;

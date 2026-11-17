@@ -1,8 +1,7 @@
-//! SoundCloud-specific helpers: playlist detection, the optional DRM fallback
-//! tool and oEmbed metadata, plus download argument construction and search
+//! SoundCloud-specific helpers: playlist detection, oEmbed metadata, plus download argument construction and search
 //! term formatting.
 
 pub mod download;
-pub mod fallback;
+pub mod oembed;
 pub mod playlist;
 pub mod search;

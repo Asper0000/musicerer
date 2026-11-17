@@ -5,7 +5,15 @@ use crate::backend::{log, Inbox, LogLevel, Source, TrackResult};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
+
+static OEMBED_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    crate::backend::http::agent_with_global_timeout(None, OEMBED_TIMEOUT)
+});
+static THUMB_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    crate::backend::http::agent_with_global_timeout(None, THUMBNAIL_TIMEOUT)
+});
 
 const OEMBED_TIMEOUT: Duration = Duration::from_secs(5);
 const THUMBNAIL_TIMEOUT: Duration = Duration::from_secs(8);
@@ -14,16 +22,15 @@ const MAX_OEMBED_THUMBNAIL_BYTES: u64 = 4 * 1024 * 1024;
 fn fetch_oembed_metadata(url: &str) -> Result<(String, Option<String>), String> {
     // Build query parameters separately so playlist URLs that already contain a
     // query string are encoded correctly rather than truncating the oEmbed URL.
-    let agent = ureq::AgentBuilder::new().timeout(OEMBED_TIMEOUT).build();
-    let res = agent
+    let mut res = OEMBED_AGENT
         .get("https://soundcloud.com/oembed")
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json,text/plain,*/*")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json,text/plain,*/*")
         .query("format", "json")
         .query("url", url)
         .call()
         .map_err(|e| e.to_string())?;
-    let json: serde_json::Value = res.into_json().map_err(|e| e.to_string())?;
+    let json: serde_json::Value = res.body_mut().read_json().map_err(|e| e.to_string())?;
     let title = json
         .get("title")
         .and_then(|v| v.as_str())
@@ -45,11 +52,10 @@ pub fn fetch_oembed(url: &str) -> Result<(String, Option<Vec<u8>>), String> {
 }
 
 fn fetch_thumbnail_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new().timeout(THUMBNAIL_TIMEOUT).build();
-    let response = agent
+    let mut response = THUMB_AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set(
+        .header("User-Agent", USER_AGENT)
+        .header(
             "Accept",
             "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
         )
@@ -58,7 +64,7 @@ fn fetch_thumbnail_bytes(url: &str) -> Result<Vec<u8>, String> {
 
     let mut bytes = Vec::with_capacity(64 * 1024);
     response
-        .into_reader()
+        .body_mut().as_reader()
         .take(MAX_OEMBED_THUMBNAIL_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;

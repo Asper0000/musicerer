@@ -1,6 +1,7 @@
 use crate::backend::Source;
 use crate::theme;
 use crate::ui::{icons::*, ItemStatus, QueueItem, ThumbState};
+use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, image, row, svg, text, Column, Space};
 use iced::{Alignment, Color, Element, Length};
 
@@ -24,18 +25,24 @@ fn is_completed(status: ItemStatus) -> bool {
         ItemStatus::Done
             | ItemStatus::Failed
             | ItemStatus::Unavailable
-            | ItemStatus::DrmSkipped
             | ItemStatus::Skipped
             | ItemStatus::Stopped
     )
 }
 
 
-fn playlist_status(children: &[QueueItem], downloading: bool) -> ItemStatus {
+fn playlist_status(children: &[QueueItem], resolving: bool, downloading: bool) -> ItemStatus {
     if children.is_empty() {
         return ItemStatus::Pending;
     }
-    if children.iter().any(|c| matches!(c.status, ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped)) {
+    // While metadata or audio matches are still arriving, tracks briefly look
+    // unavailable. Hold the header at Pending until loading settles so it never
+    // flashes an error state.
+    let loading = resolving || children.iter().any(QueueItem::is_loading);
+    if loading && !downloading {
+        return ItemStatus::Pending;
+    }
+    if children.iter().any(|c| matches!(c.status, ItemStatus::Failed | ItemStatus::Unavailable)) {
         return ItemStatus::Failed;
     }
     if children.iter().all(|c| matches!(c.status, ItemStatus::Done | ItemStatus::Skipped)) {
@@ -109,7 +116,7 @@ where
 {
     let is_header = item.group.is_some();
     let effective_status = if is_header {
-        item.group.as_ref().map_or(ItemStatus::Pending, |g| playlist_status(&g.children, downloading))
+        item.group.as_ref().map_or(ItemStatus::Pending, |g| playlist_status(&g.children, item.resolving, downloading))
     } else {
         item.status
     };
@@ -122,7 +129,7 @@ where
                 ItemStatus::Pending => (theme::text_muted(), ICON_STATUS_PENDING),
                 ItemStatus::Downloading => (theme::primary(), ICON_STATUS_DOWNLOADING),
                 ItemStatus::Done => (theme::success(), ICON_STATUS_CHECK),
-                ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::DrmSkipped => (theme::danger(), ICON_STATUS_X),
+                ItemStatus::Failed | ItemStatus::Unavailable => (theme::danger(), ICON_STATUS_X),
                 _ => (theme::text_muted(), ICON_STATUS_PENDING),
             }
         }
@@ -133,7 +140,6 @@ where
             ItemStatus::Done => (theme::success(), ICON_STATUS_CHECK),
             ItemStatus::Failed => (theme::danger(), ICON_STATUS_X),
             ItemStatus::Unavailable => (theme::text_muted(), ICON_STATUS_X),
-            ItemStatus::DrmSkipped => (theme::text_muted(), ICON_STATUS_SLASH),
             ItemStatus::Skipped => (theme::text_muted(), ICON_STATUS_SLASH),
             ItemStatus::Stopped => (theme::danger(), ICON_STATUS_SQUARE),
         }
@@ -183,12 +189,16 @@ where
         .into(),
     };
 
-    let status_glyph = svg(svg::Handle::from_memory(status_icon))
-        .width(Length::Fixed(14.0))
-        .height(Length::Fixed(14.0))
-        .style(move |_, _| svg::Style {
-            color: Some(status_color),
-        });
+    let status_glyph = container(
+        svg(svg::Handle::from_memory(status_icon))
+            .width(Length::Fixed(14.0))
+            .height(Length::Fixed(14.0))
+            .style(move |_, _| svg::Style {
+                color: Some(status_color),
+            }),
+    )
+    .width(Length::Fixed(14.0))
+    .height(Length::Fixed(14.0));
 
     let source_glyph = container(
         svg(svg::Handle::from_memory(source_icon))
@@ -231,13 +241,17 @@ where
             "Fetching track"
         };
         format!("{what}{dots:<3}")
-    } else if (item.spotify.is_some() || item.deezer.is_some())
-        && item.resolved_url.is_none()
-        && item.status == ItemStatus::Pending
-    {
+    } else if item.awaiting_match() {
         format!("Matching{dots:<3}")
     } else if matches!(item.thumbnail, ThumbState::Loading) && item.status == ItemStatus::Pending {
         format!("Fetching track{dots:<3}")
+    } else if item.status == ItemStatus::Failed
+        && item.resolved_url.is_none()
+        && (item.spotify.is_some() || item.deezer.is_some() || item.itunes.is_some())
+    {
+        // Metadata resolved, but no matching YouTube/SoundCloud upload was
+        // found within the search tolerance. Not a download failure.
+        "No audio match".to_string()
     } else {
         item.status.label().to_string()
     };
@@ -246,6 +260,7 @@ where
         source_glyph,
         text(format!("{} \u{00B7} {}", status_label, item.source.label()))
             .size(10)
+            .wrapping(Wrapping::None)
             .style(move |_| iced::widget::text::Style {
                 color: Some(status_color)
             }),
@@ -258,28 +273,29 @@ where
         .style(theme::secondary_button)
         .padding([3, 8]);
 
-    let (lead, name_limit): (Element<'a, M>, usize) = match kind {
-        RowKind::Top(index) => (
-            text(format!("{:>2}", index + 1))
-                .size(11)
-                .width(Length::Fixed(20.0))
-                .style(theme::muted_text_strong)
-                .into(),
-            60,
-        ),
-        RowKind::Child => (Space::new().width(Length::Fixed(20.0)).into(), 54),
+    let lead: Element<'a, M> = match kind {
+        RowKind::Top(index) => text(format!("{:>2}", index + 1))
+            .size(11)
+            .width(Length::Fixed(20.0))
+            .style(theme::muted_text_strong)
+            .into(),
+        RowKind::Child => Space::new().width(Length::Fixed(20.0)).into(),
     };
+
+    // The name never wraps (a wrapped second line would squeeze the fixed-height
+    // row and shrink the icons) and is clipped by the space actually available,
+    // so it reveals more of itself as the window widens.
+    let name = container(text(item.display_name.as_str()).size(12).wrapping(Wrapping::None))
+        .width(Length::Fill)
+        .clip(true);
 
     let mut row_content = row![
         lead,
         status_glyph,
         thumbnail,
-        column![
-            text(truncate(&item.display_name, name_limit)).size(12),
-            subtitle,
-        ]
-        .spacing(2)
-        .width(Length::Fill),
+        column![name, container(subtitle).width(Length::Fill).clip(true)]
+            .spacing(2)
+            .width(Length::Fill),
     ]
     .spacing(8)
     .padding([6, 8])
@@ -336,19 +352,17 @@ where
     .into()
 }
 
-fn spinner_icon(tick: u32) -> Vec<u8> {
-    let angle = (tick % 8) * 45;
-    format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\"><g transform=\"rotate({angle} 12 12)\"><path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/></g></svg>"
-    )
-    .into_bytes()
-}
+const SPINNER_FRAMES: [&[u8]; 8] = [
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(0 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(45 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(90 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(135 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(180 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(225 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(270 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><g transform="rotate(315 12 12)"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></g></svg>"#,
+];
 
-pub fn truncate(value: &str, max_chars: usize) -> String {
-    if value.chars().count() <= max_chars {
-        return value.to_string();
-    }
-    let mut out: String = value.chars().take(max_chars.saturating_sub(1)).collect();
-    out.push('\u{2026}');
-    out
+fn spinner_icon(tick: u32) -> &'static [u8] {
+    SPINNER_FRAMES[(tick as usize) % 8]
 }

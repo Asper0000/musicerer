@@ -3,7 +3,12 @@
 use crate::backend::utils::USER_AGENT;
 use serde_json::Value;
 use std::io::Read;
+use std::sync::LazyLock;
 use std::time::Duration;
+
+static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    crate::backend::http::agent_with_global_timeout(None, TIMEOUT)
+});
 
 const TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_HTML_BYTES: u64 = 4 * 1024 * 1024;
@@ -19,19 +24,33 @@ pub struct SoundCloudMeta {
     pub artist: Option<String>,
     pub album_title: Option<String>,
     pub album_artist: Option<String>,
+    /// Account name of the uploader; last-resort artist when the track has no publisher metadata.
+    pub uploader: Option<String>,
+    /// Full track length. Go+ previews report a short `duration`, so `full_duration` wins.
+    pub duration_ms: Option<u64>,
+}
+
+/// `fetch` backed by the shared per-URL cache, so the enrichment, tagging and
+/// matching steps of one download hit SoundCloud once.
+pub fn fetch_cached(url: &str) -> Result<SoundCloudMeta, String> {
+    if let Some(cached) = crate::backend::enrich_cache::get_sc(url) {
+        return Ok(cached);
+    }
+    let meta = fetch(url)?;
+    crate::backend::enrich_cache::put_sc(url, meta.clone());
+    Ok(meta)
 }
 
 pub fn fetch(url: &str) -> Result<SoundCloudMeta, String> {
-    let agent = ureq::AgentBuilder::new().timeout(TIMEOUT).build();
-    let resp = agent
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "text/html,application/xhtml+xml")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "text/html,application/xhtml+xml")
         .call()
         .map_err(|e| format!("SoundCloud page fetch: {e}"))?;
 
     let mut html = String::new();
-    resp.into_reader()
+    resp.body_mut().as_reader()
         .take(MAX_HTML_BYTES)
         .read_to_string(&mut html)
         .map_err(|e| e.to_string())?;
@@ -80,6 +99,15 @@ fn parse(html: &str) -> Result<SoundCloudMeta, String> {
     let album_title = publisher.and_then(|p| str_field(p.get("album_title")));
     let album_artist = publisher.and_then(|p| str_field(p.get("album_artist")));
 
+    let uploader = data
+        .get("user")
+        .and_then(|u| str_field(u.get("username")));
+    let duration_ms = data
+        .get("full_duration")
+        .and_then(Value::as_u64)
+        .or_else(|| data.get("duration").and_then(Value::as_u64))
+        .filter(|ms| *ms > 0);
+
     Ok(SoundCloudMeta {
         title,
         genre,
@@ -89,6 +117,8 @@ fn parse(html: &str) -> Result<SoundCloudMeta, String> {
         artist,
         album_title,
         album_artist,
+        uploader,
+        duration_ms,
     })
 }
 

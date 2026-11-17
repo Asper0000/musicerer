@@ -60,8 +60,15 @@ fn encode_square_cover(image: image::DynamicImage) -> Result<Vec<u8>, String> {
     let x = (width - side) / 2;
     let y = (height - side) / 2;
     let cropped = image.crop_imm(x, y, side, side);
+    // Cap embedded art at 1000 px: fully sufficient for every player and
+    // an order of magnitude smaller than the 3000 px Apple originals.
+    let capped = if side > 1000 {
+        cropped.resize_exact(1000, 1000, image::imageops::FilterType::CatmullRom)
+    } else {
+        cropped
+    };
     let mut output = Cursor::new(Vec::new());
-    cropped
+    capped
         .write_to(&mut output, image::ImageFormat::Jpeg)
         .map_err(|e| e.to_string())?;
     Ok(output.into_inner())
@@ -87,7 +94,13 @@ fn round_thumb(img: image::DynamicImage, size: u32, radius: f32) -> Result<Thumb
     let x = (w0 - side) / 2;
     let y = (h0 - side) / 2;
     let cropped = img.crop_imm(x, y, side, side);
-    let resized = cropped.resize_exact(size, size, image::imageops::FilterType::Lanczos3);
+    let resized = if side > size * 2 {
+        // image::imageops::thumbnail is the crate's fast box-filtered downscale,
+        // used for large ratios (e.g. 3000 -> 40). Lanczos3 above that.
+        cropped.thumbnail(size, size)
+    } else {
+        cropped.resize_exact(size, size, image::imageops::FilterType::Lanczos3)
+    };
     let rgba = resized.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     let mut pixels = rgba.into_raw();

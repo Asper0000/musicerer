@@ -3,26 +3,25 @@
 use super::models::SpotifyMeta;
 use serde_json::Value;
 use std::io::Read;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 const USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(20))
-        .build()
-}
+static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    crate::backend::http::agent_with_global_timeout(None, Duration::from_secs(20))
+});
 
 fn fetch_html(url: &str) -> Result<String, String> {
-    let resp = agent()
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "text/html,application/xhtml+xml")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "text/html,application/xhtml+xml")
         .call()
         .map_err(|e| format!("Spotify HTML: {e}"))?;
     let mut body = String::new();
-    resp.into_reader()
+    resp.body_mut().as_reader()
         .take(3 * 1024 * 1024)
         .read_to_string(&mut body)
         .map_err(|e| e.to_string())?;
@@ -30,14 +29,14 @@ fn fetch_html(url: &str) -> Result<String, String> {
 }
 
 pub fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let resp = agent()
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "image/*,*/*;q=0.8")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "image/*,*/*;q=0.8")
         .call()
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    resp.into_reader()
+    resp.body_mut().as_reader()
         .take(4 * 1024 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
@@ -225,16 +224,17 @@ fn parse_iso8601_duration(s: &str) -> Option<u64> {
 }
 
 fn fetch_oembed(spotify_url: &str) -> Result<SpotifyMeta, String> {
-    let resp = agent()
+    let mut resp = AGENT
         .get("https://open.spotify.com/oembed")
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json")
         .query("url", spotify_url)
         .call()
         .map_err(|e| format!("Spotify oEmbed: {e}"))?;
 
     let v: Value = resp
-        .into_json()
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("Spotify oEmbed JSON: {e}"))?;
 
     let raw_title = v
@@ -269,14 +269,14 @@ fn split_title_artist(raw: &str) -> (String, String) {
 
 fn fetch_embed_html(kind: &str, id: &str) -> Result<String, String> {
     let embed_url = format!("https://open.spotify.com/embed/{kind}/{id}");
-    let resp = agent()
+    let mut resp = AGENT
         .get(&embed_url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "text/html,application/xhtml+xml")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "text/html,application/xhtml+xml")
         .call()
         .map_err(|e| format!("Spotify embed: {e}"))?;
     let mut html = String::new();
-    resp.into_reader()
+    resp.body_mut().as_reader()
         .take(3 * 1024 * 1024)
         .read_to_string(&mut html)
         .map_err(|e| e.to_string())?;

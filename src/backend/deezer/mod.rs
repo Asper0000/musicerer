@@ -58,18 +58,29 @@ pub fn is_deezer_url(raw: &str) -> bool {
 }
 
 pub fn is_deezer_playlist_url(raw: &str) -> bool {
-    Url::parse(raw)
-        .ok()
-        .and_then(|url| parse_resource(&url))
-        .is_some_and(|(kind, _)| kind != "track")
+    let Ok(url) = Url::parse(raw) else { return false; };
+    let Some(host) = url.host_str() else { return false; };
+    let host = host.to_ascii_lowercase();
+    if host != "deezer.com" && !host.ends_with(".deezer.com") { return false; }
+    parse_resource(&url).is_some_and(|(kind, _)| kind != "track")
 }
 
 pub fn deezer_id(raw: &str) -> Option<(String, String)> {
-    parse_resource(&Url::parse(raw).ok()?)
+    let url = Url::parse(raw).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    if host != "deezer.com" && !host.ends_with(".deezer.com") { return None; }
+    parse_resource(&url)
 }
 
 fn rounded_cover(url: Option<&str>) -> Option<Thumb> {
-    let bytes = fetch::fetch_cover_bytes(url?).ok()?;
+    let url = url?;
+    // cover_xl is 1000x1000 (or 500x500 on older entries). Thumbnails are 40px.
+    let small = url
+        .replace("1000x1000", "120x120")
+        .replace("500x500",   "120x120");
+    let bytes = fetch::fetch_cover_bytes(&small)
+        .or_else(|_| fetch::fetch_cover_bytes(url))
+        .ok()?;
     audio::make_rounded_thumb_from_bytes(&bytes, THUMB_PX, THUMB_RADIUS).ok()
 }
 
@@ -202,7 +213,14 @@ fn run_playlist(id: u64, url: &str, inbox: &Inbox, cancel: &AtomicBool) {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
-                let resolved_url = matcher::resolve_track(&meta, cancel).ok();
+                let resolved_url = match matcher::resolve_track(&meta, cancel) {
+                    Ok(url) => Some(url),
+                    Err(e) => {
+                        log(inbox, LogLevel::Warn,
+                            format!("[{}] {e}", meta.display_title()));
+                        None
+                    }
+                };
                 let thumb = rounded_cover(meta.cover_url.as_deref());
 
                 if cancel.load(Ordering::Relaxed) {

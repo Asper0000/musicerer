@@ -7,7 +7,7 @@
 //! are treated as absent so a blank value never wins over a real one.
 //!
 //!   title        Spotify > Deezer > native > existing > SC-hydration > oEmbed > filename
-//!   artist       Spotify > Deezer > SC-hydration > native > existing
+//!   artist       Spotify > Deezer > SC-hydration > native > existing > SC uploader
 //!   album        Deezer > SC-hydration > enrichment > native > existing
 //!   year         Deezer > SC-hydration > enrichment > native
 //!   track#       Deezer > enrichment > native
@@ -61,7 +61,7 @@ pub struct MergedMeta {
     pub disc_number: Option<i32>,
     pub genre: Option<String>,
     pub cover: Option<Vec<u8>>,
-    // Populated by merge but not written to M4A tags by audiotags 0.3.x.
+    // Populated by merge but not written to M4A tags by audiotags 0.5.x.
     // Kept here so Phase 4 can layer on top without changing the shape.
     #[allow(dead_code)] pub album_artist: Option<String>,
     #[allow(dead_code)] pub label: Option<String>,
@@ -158,7 +158,11 @@ fn resolve_artist(input: &MergeInput) -> Option<String> {
     if let Some(a) = input.existing.and_then(|e| e.artist.as_deref()).and_then(non_empty) {
         return Some(a.to_string());
     }
-    None
+    input
+        .sc
+        .and_then(|s| s.uploader.as_deref())
+        .and_then(non_empty)
+        .map(str::to_string)
 }
 
 fn resolve_album(input: &MergeInput) -> Option<String> {
@@ -358,16 +362,25 @@ fn resolve_gain(input: &MergeInput) -> Option<f32> {
 }
 
 fn resolve_cover(input: &MergeInput) -> Option<Vec<u8>> {
-    // Strict precedence: original source wins. If the job was Spotify,
-    // `spotify_cover` wins. If the job was YouTube, `spotify_cover` and
-    // `deezer_cover` are None, so `disk_cover` (native) wins.
+    // Primary metadata source always wins.
     if let Some(c) = input.spotify_cover.as_deref() {
         return Some(c.to_vec());
     }
     if let Some(c) = input.deezer_cover.as_deref() {
         return Some(c.to_vec());
     }
-    // Original source (disk) ALWAYS wins over enriched covers
+    // When iTunes is the primary source for this track (its metadata is
+    // attached to the job, not just the enrichment struct), its cover is
+    // the album art, not an enrichment hint. Prefer it over the YouTube
+    // music-video frame that yt-dlp wrote to disk. The handover rule
+    // "never replace a native YouTube thumbnail with an iTunes cover"
+    // applies to the enrichment path, where `input.itunes` is None.
+    if input.itunes.is_some() {
+        if let Some(c) = input.itunes_cover.as_deref() {
+            return Some(c.to_vec());
+        }
+    }
+    // Original source (disk) wins over enrichment covers.
     if let Some(c) = input.disk_cover.as_deref() {
         return Some(c.to_vec());
     }

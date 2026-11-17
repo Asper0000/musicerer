@@ -56,6 +56,7 @@ pub fn for_download(
     job_spotify: Option<&crate::backend::spotify::SpotifyMeta>,
     job_deezer: Option<&DeezerMeta>,
     job_itunes: Option<&crate::backend::itunes::ITunesMeta>,
+    job_soundcloud: Option<&SoundCloudMeta>,
     audio_source: Source,
     inbox: &Inbox,
     label: &str,
@@ -67,6 +68,11 @@ pub fn for_download(
         (sp.title.clone(), sp.artists.clone(), sp.duration_ms, Source::Spotify)
     } else if let Some(it) = job_itunes {
         (it.title.clone(), it.artists.clone(), it.duration_ms, Source::ITunes)
+    } else if let Some(sc) = job_soundcloud {
+        // SoundCloud track whose audio came from YouTube: the file's own
+        // info.json describes the YouTube upload, so identify by SoundCloud.
+        let artist = sc.artist.clone().or_else(|| sc.uploader.clone()).unwrap_or_default();
+        (sc.title.clone().unwrap_or_default(), artist, sc.duration_ms, Source::SoundCloud)
     } else {
         let (t, a, d, s) =
             crate::backend::tagging::enrichment_identity(audio_path, audio_source)?;

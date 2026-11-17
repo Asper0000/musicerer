@@ -67,7 +67,14 @@ pub fn itunes_id(raw: &str) -> Option<(String, String, Option<String>)> {
 }
 
 fn rounded_cover(url: Option<&str>) -> Option<Thumb> {
-    let bytes = fetch_cover_bytes(url?).ok()?;
+    let url = url?;
+    // The stored URL points at 3000x3000 art (used for embedding). The queue
+    // thumbnail only needs ~40px, so request a small variant and fall back
+    // to the large one if the CDN rejects the rewrite.
+    let small = url.replace("3000x3000bb", "100x100bb");
+    let bytes = fetch_cover_bytes(&small)
+        .or_else(|_| fetch_cover_bytes(url))
+        .ok()?;
     audio::make_rounded_thumb_from_bytes(&bytes, THUMB_PX, THUMB_RADIUS).ok()
 }
 

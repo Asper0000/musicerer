@@ -6,10 +6,10 @@ use crate::backend::Source;
 use iced::widget::image;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum View { Downloads, Settings }
+pub enum View { Downloads, Settings, Installation }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemStatus { Pending, Downloading, Done, Failed, Unavailable, DrmSkipped, Skipped, Stopped }
+pub enum ItemStatus { Pending, Downloading, Done, Failed, Unavailable, Skipped, Stopped }
 
 impl ItemStatus {
     pub fn label(self) -> &'static str {
@@ -19,7 +19,6 @@ impl ItemStatus {
             ItemStatus::Done => "Done",
             ItemStatus::Failed => "Failed",
             ItemStatus::Unavailable => "Unavailable",
-            ItemStatus::DrmSkipped => "DRM skipped",
             ItemStatus::Skipped => "Skipped",
             ItemStatus::Stopped => "Stopped",
         }
@@ -75,6 +74,46 @@ impl QueueItem {
             itunes: None,
             playlist_title: None,
         }
+    }
+
+    /// True when this row came from a metadata-only service (Spotify, Deezer,
+    /// Apple Music) whose audio has to be matched on YouTube/SoundCloud first.
+    pub fn uses_metadata_source(&self) -> bool {
+        self.spotify.is_some()
+            || self.deezer.is_some()
+            || self.itunes.is_some()
+            || matches!(self.source, Source::Spotify | Source::Deezer | Source::ITunes)
+    }
+
+    /// Metadata is known but the audio match is still in flight.
+    pub fn awaiting_match(&self) -> bool {
+        self.uses_metadata_source()
+            && self.resolved_url.is_none()
+            && self.status == ItemStatus::Pending
+    }
+
+    /// A metadata-source row with no downloadable audio. It cannot be sent to
+    /// the downloader, and it is not a download failure.
+    pub fn unmatched(&self) -> bool {
+        self.uses_metadata_source() && self.resolved_url.is_none()
+    }
+
+    /// The row is still loading something (metadata, audio match or cover)
+    /// and must not be downloaded yet.
+    pub fn is_loading(&self) -> bool {
+        self.resolving
+            || self.awaiting_match()
+            || (matches!(self.thumbnail, ThumbState::Loading) && self.status == ItemStatus::Pending)
+    }
+
+    /// A genuine download-stage problem worth retrying: failed, unavailable or
+    /// stopped. Metadata and matching failures do not count.
+    pub fn needs_retry(&self) -> bool {
+        !self.unmatched()
+            && matches!(
+                self.status,
+                ItemStatus::Failed | ItemStatus::Unavailable | ItemStatus::Stopped
+            )
     }
 
     /// All downloadable tracks in this row. For a playlist header that's only

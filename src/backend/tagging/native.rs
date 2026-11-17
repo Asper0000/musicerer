@@ -25,6 +25,12 @@ pub struct NativeMeta {
 }
 
 impl NativeMeta {
+    /// No native data at all, for audio whose yt-dlp sidecars describe a
+    /// different upload than the track being tagged.
+    pub fn empty() -> Self {
+        Self { track_info: None, title: None, artist: None, album: None, year: None, track_number: None }
+    }
+
     pub fn info_missing(&self) -> bool {
         self.track_info.is_none()
     }

@@ -5,12 +5,12 @@
 <h1 align="center">Musicerer</h1>
 
 <p align="center">
-  <strong>A sleek, native queue downloader for extracting audio into fully tagged AAC <code>.m4a</code> files.</strong><br>
-  Built in Rust with Iced and tiny-skia.
+  <strong>A native queue-based audio downloader that saves tagged AAC <code>.m4a</code> files.</strong><br>
+  Built with Rust and Iced.
 </p>
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/Version-0.3-6f42c1" alt="Version 0.3"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Version-0.3.0-6f42c1" alt="Version 0.3.0"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust&logoColor=white" alt="Rust"></a>
   <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11%20%7C%20Linux-0078D6?logo=windows&logoColor=white" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License"></a>
@@ -20,10 +20,11 @@
 
 ## Contents
 
-- [What is Musicerer?](#what-is-musicerer)
+- [Overview](#overview)
 - [Features](#features)
+- [Supported services](#supported-services)
 - [How it works](#how-it-works)
-- [What doesn't work: Go+](#what-doesnt-work-go)
+- [Runtime tools](#runtime-tools)
 - [Building from source](#building-from-source)
 - [Configuration](#configuration)
 - [Technical details](#technical-details)
@@ -32,129 +33,157 @@
 
 ---
 
-## What is Musicerer?
+## Overview
 
-**Musicerer** is a lightweight, native GUI application designed to download audio from various supported platforms. It takes a queue of URLs, extracts the best available audio, and saves it as a standardized `.m4a` (AAC) file complete with advanced iTunes-style metadata, high-resolution cover art, and smart file organization.
+**Musicerer** is a desktop application for building a queue of music links and downloading their audio as AAC `.m4a` files. It combines media extraction with metadata lookup and tagging, then organizes completed files in the selected output directory.
 
-Unlike traditional downloaders that rely on bulky web frameworks, Musicerer is built entirely in Rust using **Iced** and **tiny-skia**. It renders purely on the CPU, requires no GPU, and features a completely custom, borderless dark UI with native window resizing.
+The application is written in Rust and uses Iced with the `tiny-skia` renderer. Its interface includes queue progress, track previews, download logs, settings, and an Installation tab for Musicerer and its runtime tools.
 
-- **Convenient to run.** Officially compiled releases come bundled with all necessary media tools, requiring zero setup from the user.
-- **Smart & Clean.** Cross-references multiple music databases to fill in missing tags, automatically groups playlist downloads into safe subfolders, and runs isolated temporary downloads.
-- **Low-impact.** It keeps preferences in the current user’s config directory and does not modify system registries.
-
-> **Side Note:** The officially bundled Windows executable is large because it embeds full, uncompressed builds of the required media tools (FFmpeg and Deno are the biggest).
-
----
+Musicerer does not embed third-party media-tool binaries in its executable or release packages. Required tools are installed and updated separately by the application.
 
 ## Features
 
-- 🎵 **Multi-Platform Support**: Add individual tracks, albums, and playlists from YouTube, SoundCloud, Spotify, and Deezer. Spotify and Deezer act as metadata-first sources, resolving to the highest quality YouTube or SoundCloud audio.
-- 🧠 **Intelligent Metadata Resolution**: Automatically cross-references multiple public APIs to fetch and merge the most accurate metadata (canonical artist, album, year, genre, label, ISRC, BPM, and ReplayGain) regardless of the original source.
-- 🎨 **Custom UI**: Frameless window, dark monochrome theme with blue accents, dynamic status indicators, and draggable/resizable edges.
-- 🖼️ **Advanced Tagging**: Writes standard tags via `audiotags` and advanced freeform M4A atoms (ISRC, Label, BPM) via `mp4ameta`, complete with center-cropped 1:1 cover art.
-- 📊 **Queue Management**: Adaptive parallel downloads, real-time progress bars, track previews, and detailed log output.
-- 📂 **Smart Organization**: Playlist and album tracks are automatically sorted into their own subfolders, preventing collisions when multiple playlists share the same name.
-- 💾 **Persistent Settings**: Saves your output directory, cookies path, and UI preferences automatically.
-- 🔓 **DRM Support**: Officially compiled releases include built-in support for extracting DRM-protected SoundCloud songs.
+- **Queue-based downloads:** Add links, preview tracks, monitor progress, inspect logs, and run multiple downloads concurrently.
+- **Multi-service support:** Accepts links from YouTube, YouTube Music, SoundCloud, Spotify, Deezer, and Apple Music.
+- **Metadata matching:** Uses source metadata and cross-service lookups to improve track information and find playable audio for metadata-based sources.
+- **Audio conversion:** Produces AAC `.m4a` files using FFmpeg.
+- **Metadata tagging:** Writes available track and album information, including artist, album, release year, track and disc numbers, genre, label, ISRC, BPM, and ReplayGain.
+- **Cover art:** Retrieves available artwork and converts it to square cover art for the output file.
+- **Playlist organization:** Can place playlist and album downloads into their own folders.
+- **Download controls:** Supports stopping the queue and optionally skipping files that already exist in the destination.
+- **Installation management:** Checks for Musicerer and tool updates, and provides controls to install, reinstall, or remove managed tools.
+- **Persistent settings:** Remembers the output directory, cookies file, and download preferences between runs.
 
----
+## Supported services
+
+Musicerer accepts links from:
+
+- YouTube
+- YouTube Music
+- SoundCloud
+- Spotify
+- Deezer
+- Apple Music
+
+YouTube and SoundCloud provide the media sources used for extraction. Spotify, Deezer, and Apple Music links provide track metadata and are matched to an available audio source.
 
 ## How it works
 
-Musicerer abstracts away the complexity of command-line media extraction.
+1. Add a supported link to the queue. Musicerer identifies the service and resolves track information.
+2. For metadata-based services, Musicerer looks for a matching playable audio source.
+3. The scheduler runs downloads concurrently, with bounded worker counts and retry handling.
+4. `yt-dlp` extracts the audio and FFmpeg converts it to AAC `.m4a`.
+5. Musicerer gathers and merges available metadata, adds cover art, writes the tags, and moves the completed file into the output directory.
+6. Temporary download data is cleaned up after processing.
 
-1. When a URL is added, Musicerer detects the source. YouTube and SoundCloud URLs are prepared for direct audio extraction. Spotify and Deezer URLs act as metadata layers, searching for a matching YouTube or SoundCloud audio source.
-2. The metadata engine extracts native information, hydrates hidden metadata, and cross-queries other backends with strict fuzzy-matching to fill in any missing gaps (album, genre, track number, etc.). A precedence merge table ensures the most authoritative data wins.
-3. Downloads run concurrently in isolated temporary directories with adaptive worker limits. The scheduler automatically handles rate limits and parallel versions of the same song.
-4. `yt-dlp` extracts the audio and converts it to `.m4a` using FFmpeg.
-5. The application downloads and center-crops the best available cover art, writes the merged tags to the file, and moves it to the output folder (or a specific playlist subfolder). Temporary data is cleaned up automatically.
+## Runtime tools
 
----
+Musicerer requires external media tools, but **does not bundle them** in the application executable, Windows installer, AppImage, DEB, or RPM packages.
 
-## What doesn't work: Go+
+The Installation tab manages these tools:
 
-**SoundCloud Go+ tracks** may return a short preview instead of the full stream when the current session is not entitled to the complete track. When `ffprobe` is available and the extracted SoundCloud audio is shorter than 45 seconds, Musicerer marks the download as failed rather than silently saving a likely preview. This duration check is a heuristic; a genuinely short track can also trigger it.
+| Tool | Purpose |
+|---|---|
+| yt-dlp | Media extraction |
+| FFmpeg | Audio conversion and media processing |
+| FFprobe | Media information and duration checks |
+| Deno | JavaScript runtime used by supported extraction workflows |
 
-For SoundCloud items that `yt-dlp` reports as DRM-protected, officially compiled releases include a built-in fallback mechanism to attempt extraction. This is best-effort and does not guarantee access to restricted content. YouTube DRM-protected content is skipped.
+On supported systems, Musicerer can download and update managed copies automatically. Managed tools are stored in the user's application configuration directory and take priority over other copies.
+
+If a managed copy is not present, Musicerer can also find tools in a local `tools` directory or through the system `PATH`. The Installation tab reports detected tool status and provides controls for managed installations.
+
+Automatic tool downloads are supported on Windows x64, Linux x64, and Linux ARM64. Musicerer itself is packaged for Windows and Linux.
 
 ---
 
 ## Building from source
 
-To build Musicerer, install the Rust toolchain and place the required runtime dependencies in the appropriate folders.
-
 ### Prerequisites
 
-- **Rust** 1.95 or newer
+- Rust 1.95 or newer.
+- Windows: Inno Setup 6 or 7 to build the setup executable.
+- Windows-to-Linux builds: WSL with a Linux Rust toolchain.
+- Linux builds: a C toolchain, `pkg-config`, the X11/Wayland development libraries, and the packaging tools for the selected format.
 
-### Setup (Windows)
+### Windows
 
-Put these files in a `tools/` folder at the project root:
-`yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`, `deno.exe`
+Run `build.bat` from the project directory:
 
-Then run:
+```bat
+build.bat
+build.bat portable
+build.bat setup
+build.bat both
+```
 
-~~~bat
-build.bat            :: builds both versions
-build.bat bundled    :: builds only the all-in-one exe
-build.bat portable   :: builds only the slim exe
-~~~
+| Target | Result |
+|---|---|
+| `portable` | Builds `dist\portable\musicerer.exe` |
+| `setup` | Builds the portable executable, then creates the Windows installer |
+| `both` | Builds the portable executable and Windows installer |
+| *(no target)* | Same as `both` |
 
-Results:
-- `dist\bundled\musicerer.exe` - Everything embedded; extracted on first use to `%TEMP%\musicerer-tools-<version>`.
-- `dist\portable\musicerer.exe` - Nothing embedded. Place the tools in `dist\portable\tools\` (or put them on `PATH`). If required tools are missing, the app still opens and shows a warning dialog listing them.
+The setup executable is written to `dist\installer\Musicerer_Setup_v<version>.exe`. The version is read from `Cargo.toml`. The installer contains Musicerer itself; runtime media tools are installed separately by the application.
 
-The `bundled` build needs all four files present at compile time; the `portable` build compiles without them.
+### Linux
 
-### Setup (Linux)
+Linux packages can be built inside WSL when invoked from Windows:
 
-Linux packages are built from Windows through WSL, or directly on any Linux machine. Tools are never embedded in the executable on Linux; instead the packages ship them in a `tools` folder next to the real binary (`/usr/lib/musicerer/tools`), which Musicerer searches automatically.
+```bat
+build.bat appimage
+build.bat deb
+build.bat rpm
+build.bat linux
+```
 
-Put these **Linux** binaries in a `linux_tools/` folder at the project root:
-`yt-dlp`, `ffmpeg`, `ffprobe`, `deno`
+`linux` builds all three formats. `all` builds the Windows portable executable, Windows setup, and all Linux packages.
 
-Then, from Windows:
+On a native Linux system, run:
 
-~~~bat
-build.bat linux        :: builds AppImage + .deb + .rpm
-build.bat appimage     :: or deb / rpm, individually
-build.bat all          :: builds Windows and Linux targets
-~~~
+```bash
+packaging/linux/build.sh
+packaging/linux/build.sh appimage
+packaging/linux/build.sh deb
+packaging/linux/build.sh rpm
+```
 
-On a native Linux machine, run `packaging/linux/build.sh [appimage] [deb] [rpm]` instead.
+Linux packages contain the Musicerer application and desktop integration. They do not contain runtime media tools or require a project-level `linux_tools` directory. The AppImage build downloads and caches `appimagetool` as a build-time dependency; it is not included in the resulting application.
 
-### Build (plain cargo)
+### Plain Cargo build
 
-If you don't want to use the build scripts, you can compile directly:
+To build only the application executable:
 
-~~~bash
+```bash
 cargo build --release
-~~~
+```
 
-The executable will be at `target/release/musicerer`. Without a package, it looks for tools in a `tools` folder, then on `PATH`.
-
-*(Note: Building from source does not include the custom SoundCloud DRM fallback binary; that capability is exclusive to the officially compiled releases.)*
+The executable is written to `target/release/musicerer` on Linux or `target/release/musicerer.exe` on Windows. No third-party runtime media tools are embedded in the executable.
 
 ---
 
 ## Configuration
 
-You can configure Musicerer directly from the **Settings** tab:
-- **Output folder:** Where finished `.m4a` files are saved.
-- **Cookies file:** An optional Netscape-format `cookies.txt` file. Highly recommended for bypassing bot-checks or downloading age-gated content.
-- **Playlist folders:** Toggle whether playlist tracks are saved in their own subfolders.
+Settings are available from the **Settings** tab:
 
-These settings are saved automatically to your OS config directory (e.g., `%APPDATA%\Musicerer\config.json` on Windows, `~/.config/Musicerer/config.json` on Linux).
+- **Output folder:** Destination for completed `.m4a` files.
+- **Cookies file:** Optional Netscape-format `cookies.txt` file.
+- **Skip existing files:** Skips a track when a file with the same output name already exists.
+- **Playlist folders:** Saves playlist and album tracks in their own subfolders.
+- **VPN warning:** The startup warning can be dismissed or suppressed.
+
+Settings are saved automatically to the operating system's user configuration directory, in `Musicerer/config.json` (for example, `%APPDATA%\Musicerer\config.json` on Windows and `~/.config/Musicerer/config.json` on Linux).
 
 ---
 
 ## Technical details
 
-### Architecture
-- **UI:** Built with `iced` using the `tiny-skia` backend for pure CPU rendering. The UI uses a custom `stack!` layout to overlay invisible `MouseArea` handles on the edges of the window for native-feeling resizing.
-- **Metadata Engine:** A strictly typed precedence merge system (`tagging/merge.rs`) resolves conflicts between native `yt-dlp` data, SoundCloud hydration, Spotify/Deezer APIs, and the enrichment layer. Results are cached using `LazyLock` and parallel-safe mutexes to prevent redundant network requests.
-- **Concurrent backend:** Downloads, playlist expansion, and metadata enrichment run on bounded worker threads. Workers communicate with the UI through an `Arc<Mutex<Vec<WorkerEvent>>>` inbox, polled by an Iced subscription.
-- **Subprocess Management:** External tools are spawned using `std::process::Command`. On Windows, `CREATE_NO_WINDOW` flags are applied to prevent console windows from flashing. On Linux, tools run in their own process groups to allow clean termination of the process tree.
+- **Language:** Rust, edition 2021.
+- **GUI:** Iced 0.14 with the `tiny-skia` renderer.
+- **Download process:** External tools are launched as child processes. Windows subprocesses are configured to avoid opening extra console windows.
+- **Concurrency:** Queue downloads and metadata resolution use worker threads and communicate progress and results back to the UI.
+- **Metadata:** Separate service modules handle Spotify, Deezer, Apple Music/iTunes, and SoundCloud metadata. A merge layer resolves competing metadata values.
+- **Updates:** Musicerer checks GitHub releases for application and managed-tool updates. Tool downloads are installed into the managed tools directory.
 
 ---
 
@@ -162,22 +191,20 @@ These settings are saved automatically to your OS config directory (e.g., `%APPD
 
 Musicerer is licensed under the **GNU General Public License v3.0** (GPLv3).
 
-This is an original, standalone project. It is not a fork or modification of any existing codebase. By using, modifying, or redistributing this project, you agree to the terms of the GPLv3.
-
-The full license text is in [`LICENSE`](LICENSE).
+The full license text is available in [`LICENSE`](LICENSE).
 
 ---
 
 ## Credits
 
-- **[Iced](https://github.com/iced-rs/iced)**: The cross-platform GUI library for Rust.
-- **[yt-dlp](https://github.com/yt-dlp/yt-dlp)**: The backbone of the media extraction process.
-- **[FFmpeg](https://ffmpeg.org/)**: For audio transcoding and thumbnail conversion.
-- **[audiotags](https://github.com/ttscoff/audiotags)** & **[mp4ameta](https://github.com/jdecourcy/mp4ameta)**: For reading and writing standard and advanced M4A metadata.
-- **[tiny-skia](https://github.com/RazrFalcon/tiny-skia)**: The pure-Rust CPU rasteriser.
+- **[Iced](https://github.com/iced-rs/iced):** Cross-platform GUI library for Rust.
+- **[yt-dlp](https://github.com/yt-dlp/yt-dlp):** Media extraction.
+- **[FFmpeg](https://ffmpeg.org/):** Audio conversion and media processing.
+- **[audiotags](https://github.com/ttscoff/audiotags)** and **[mp4ameta](https://github.com/jdecourcy/mp4ameta):** Audio metadata reading and writing.
+- **[tiny-skia](https://github.com/RazrFalcon/tiny-skia):** 2D rendering library.
 
 ---
 
 <p align="center">
-  <em>If Musicerer makes your music library better, consider starring the repo ⭐</em>
+  <em>If Musicerer is useful to you, consider starring the repository.</em>
 </p>

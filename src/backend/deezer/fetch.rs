@@ -49,22 +49,21 @@ impl RateLimiter {
 
 static RATE_LIMITER: LazyLock<RateLimiter> = LazyLock::new(RateLimiter::new);
 
-fn api_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(20))
-        .build()
-}
+static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    crate::backend::http::agent_with_global_timeout(None, Duration::from_secs(20))
+});
 
 fn get_json(url: &str) -> Result<Value, String> {
     RATE_LIMITER.wait();
-    let resp = api_agent()
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json")
         .call()
         .map_err(|e| format!("Deezer API: {e}"))?;
     let v: Value = resp
-        .into_json()
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("Deezer API JSON: {e}"))?;
     if let Some(err) = v.get("error") {
         let msg = err
@@ -146,17 +145,14 @@ pub fn fetch_playlist_summary(deezer_url: &str) -> Result<PlaylistSummary, Strin
 }
 
 pub fn fetch_cover_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(15))
-        .build();
-    let resp = agent
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
         .call()
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    resp.into_reader()
+    resp.body_mut().as_reader()
         .take(4 * 1024 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
@@ -377,16 +373,17 @@ pub fn fetch_album_genre(album_id: &str) -> Result<Option<String>, String> {
 
 fn get_json_query(base: &str, params: &[(&str, &str)]) -> Result<Value, String> {
     RATE_LIMITER.wait();
-    let mut req = api_agent()
+    let mut req = AGENT
         .get(base)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json");
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json");
     for (k, v) in params {
         req = req.query(k, v);
     }
-    let resp = req.call().map_err(|e| format!("Deezer API: {e}"))?;
+    let mut resp = req.call().map_err(|e| format!("Deezer API: {e}"))?;
     let v: Value = resp
-        .into_json()
+        .body_mut()
+        .read_json()
         .map_err(|e| format!("Deezer API JSON: {e}"))?;
     if let Some(err) = v.get("error") {
         let msg = err

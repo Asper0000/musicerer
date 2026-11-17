@@ -13,7 +13,6 @@ die()  { printf '\n%serror:%s %s\n' "$_R" "$_0" "$*" >&2; exit 1; }
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$PKG_DIR/../.." && pwd)"
 DIST_LINUX="$ROOT/dist/linux"
-TOOLS_SRC="${MUSICERER_LINUX_TOOLS:-$ROOT/linux_tools}"
 CARGO_TARGET="$ROOT/target/linux"
 CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/musicerer-build"
 
@@ -21,8 +20,6 @@ APP_ID="musicerer"
 APP_NAME="Musicerer"
 APP_SUMMARY="Queue downloader that extracts audio into tagged AAC .m4a files"
 MAINTAINER="${MAINTAINER:-Musicerer <noreply@example.invalid>}"
-# Tools shipped inside every Linux package. Names match src/backend/tools.rs.
-TOOLS=(yt-dlp ffmpeg ffprobe deno soundcloud)
 
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
 [[ -n "$VERSION" ]] || die "Could not read the version from Cargo.toml."
@@ -38,8 +35,6 @@ umask 022
 # ---- checks ----------------------------------------------------------------
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required. $2"; }
 
-is_elf() { [[ "$(head -c4 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" == 7f454c46 ]]; }
-
 # Finds a *Linux* cargo. Inside WSL the Windows PATH is appended to $PATH, so a plain
 # `command -v cargo` can silently pick up cargo.exe from /mnt/c, which must not be used.
 require_linux_cargo() {
@@ -51,18 +46,6 @@ require_linux_cargo() {
             die "No Linux Rust toolchain found${c:+ (only $c, which is the Windows one)}.
        Install it inside WSL:  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" ;;
     esac
-}
-
-# Every tool must exist and be a Linux ELF binary (catches Windows .exe files dropped in by mistake).
-check_tools() {
-    [[ -d "$TOOLS_SRC" ]] || die "Tools folder not found: $TOOLS_SRC"
-    local missing=() t f
-    for t in "${TOOLS[@]}"; do
-        f="$TOOLS_SRC/$t"
-        if [[ ! -f "$f" ]]; then missing+=("$t"); continue; fi
-        is_elf "$f" || die "$f is not a Linux executable (ELF). Windows .exe files cannot be packaged here."
-    done
-    ((${#missing[@]} == 0)) || die "Missing in ${TOOLS_SRC##*/}/: ${missing[*]}"
 }
 
 # ---- build -----------------------------------------------------------------
@@ -88,26 +71,19 @@ build_binary() {
 }
 
 # ---- staging ---------------------------------------------------------------
-# Lays out the installed file tree once; every package format starts from a copy of it.
-#   /usr/bin/musicerer                      -> symlink to the real binary
-#   /usr/lib/musicerer/musicerer            real binary
-#   /usr/lib/musicerer/tools/<tool>         bundled tools, found by src/backend/tools.rs
-#                                           (it looks in "tools" next to the real executable)
-#   /usr/share/applications, icons, doc     desktop integration
+# Runtime media tools are downloaded by Musicerer after launch, or resolved
+# from the user's PATH. Packages contain only the app and desktop integration.
 stage_payload() {
-    local root="$1" t
-    install -d "$root/usr/bin" "$root/usr/lib/$APP_ID/tools" \
+    local root="$1"
+    install -d "$root/usr/bin" "$root/usr/lib/$APP_ID" \
                "$root/usr/share/applications" \
                "$root/usr/share/icons/hicolor/scalable/apps" \
                "$root/usr/share/doc/$APP_ID"
     install -m755 "$BINARY" "$root/usr/lib/$APP_ID/$APP_ID"
-    for t in "${TOOLS[@]}"; do
-        install -m755 "$TOOLS_SRC/$t" "$root/usr/lib/$APP_ID/tools/$t"
-    done
     ln -s "../lib/$APP_ID/$APP_ID" "$root/usr/bin/$APP_ID"
     install -m644 "$PKG_DIR/$APP_ID.desktop" "$root/usr/share/applications/$APP_ID.desktop"
-    install -m644 "$ROOT/assets/icon.svg"    "$root/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
-    install -m644 "$ROOT/LICENSE"            "$root/usr/share/doc/$APP_ID/LICENSE"
+    install -m644 "$ROOT/assets/icon.svg" "$root/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
+    install -m644 "$ROOT/LICENSE" "$root/usr/share/doc/$APP_ID/LICENSE"
 }
 
 # Replaces @VERSION@-style placeholders in a template and writes the result.

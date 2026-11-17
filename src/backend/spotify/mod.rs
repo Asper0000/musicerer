@@ -224,6 +224,10 @@ fn match_and_emit(
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
+                if let Err(ref e) = result {
+                    log(inbox, LogLevel::Warn,
+                        format!("[{}] {e}", meta.display_title()));
+                }
                 match result {
                     Ok(url) => emit(
                         inbox,

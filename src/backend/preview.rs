@@ -1,7 +1,7 @@
 use super::process;
 use super::{
     audio::{make_rounded_thumb, make_rounded_thumb_from_bytes},
-    detect_source, emit, soundcloud_fallback, soundcloud_meta,
+    detect_source, emit, soundcloud_oembed, soundcloud_meta,
     tools::{self, Tool},
     Inbox, Source, Thumb, WorkerEvent,
 };
@@ -127,7 +127,7 @@ fn fetch_preview(url: &str, cookies: Option<&Path>, cancel: &AtomicBool) -> Resu
 
     if !output.status.success() {
         if source == Source::SoundCloud && !cancel.load(Ordering::Relaxed) {
-            if let Ok((title, thumb_bytes)) = soundcloud_fallback::fetch_oembed(url) {
+            if let Ok((title, thumb_bytes)) = soundcloud_oembed::fetch_oembed(url) {
                 let thumb = thumb_bytes.as_deref().and_then(|bytes| {
                     make_rounded_thumb_from_bytes(bytes, PREVIEW_THUMB_PX, PREVIEW_THUMB_RADIUS)
                         .ok()

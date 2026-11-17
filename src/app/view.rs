@@ -1,11 +1,12 @@
 use super::{App, Message};
+use crate::backend::updater::{self, Component};
 use crate::backend::vpn::VpnInfo;
 use crate::theme as t;
 use crate::ui::{
     custom_progress_bar,
     icons::{
-        ICON_ALERT_TRIANGLE, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS, ICON_SRC_SOUNDCLOUD,
-        ICON_SRC_YOUTUBE,
+        ICON_ALERT_TRIANGLE, ICON_DOT, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS,
+        ICON_SRC_SOUNDCLOUD, ICON_SRC_YOUTUBE,
     },
     queue::queue_group,
     ItemStatus, UiLogLevel, View,
@@ -15,7 +16,7 @@ use iced::widget::{
     button, column, container, row, scrollable, stack, svg, text, text_input, Column, MouseArea,
     Space,
 };
-use iced::window::Direction;
+use iced::window::{self, Direction};
 use iced::{Alignment, Color, Element, Length};
 
 const ICON_MINIMIZE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 10 10"><line x1="1" y1="5" x2="9" y2="5" stroke="currentColor" stroke-width="1"/></svg>"#;
@@ -26,7 +27,7 @@ const ICON_FOLDER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="14
 const ICON_DISK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/></svg>"#;
 const ICON_PLUG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>"#;
 
-fn resize_handle(dir: Direction, width: Length, height: Length) -> Element<'static, Message> {
+fn resize_handle(window_id: window::Id, dir: Direction, width: Length, height: Length) -> Element<'static, Message> {
     let interaction = match dir {
         Direction::North | Direction::South => iced::mouse::Interaction::ResizingVertically,
         Direction::East | Direction::West => iced::mouse::Interaction::ResizingHorizontally,
@@ -38,17 +39,26 @@ fn resize_handle(dir: Direction, width: Length, height: Length) -> Element<'stat
         }
     };
     MouseArea::new(Space::new().width(width).height(height))
-        .on_press(Message::WindowResize(dir))
+        .on_press(Message::WindowResize(window_id, dir))
         .interaction(interaction)
         .into()
 }
 
 impl App {
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, window_id: window::Id) -> Element<'_, Message> {
+        if Some(window_id) == self.log_window_id {
+            self.view_log_window(window_id)
+        } else {
+            self.view_main_window(window_id)
+        }
+    }
+
+    fn view_main_window(&self, window_id: window::Id) -> Element<'_, Message> {
         let sidebar = self.view_sidebar();
         let content = container(match self.current_view {
             View::Downloads => self.view_downloads(),
             View::Settings => self.view_settings(),
+            View::Installation => self.view_installation(),
         })
         .padding(16)
         .width(Length::Fill)
@@ -80,8 +90,12 @@ impl App {
             .height(Length::Fill);
 
         let content_with_overlay: Element<'_, Message> =
-            if let Some(vpn) = &self.startup_vpn_warning {
+            if self.show_uninstall_dialog {
+                stack![content_area, self.view_uninstall_dialog()].into()
+            } else if let Some(vpn) = &self.startup_vpn_warning {
                 stack![content_area, self.view_vpn_overlay(vpn)].into()
+            } else if self.update_prompt {
+                stack![content_area, self.view_update_prompt()].into()
             } else if self.show_platforms {
                 stack![content_area, self.view_platforms_dialog()].into()
             } else {
@@ -89,7 +103,7 @@ impl App {
             };
 
         let main_content = container(column![
-            self.view_title_bar(),
+            self.view_title_bar(window_id),
             top_separator,
             content_with_overlay,
             bottom_separator,
@@ -109,23 +123,23 @@ impl App {
 
         let resize_overlay = column![
             row![
-                resize_handle(Direction::NorthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
-                resize_handle(Direction::North, Length::Fill, Length::Fixed(8.0)),
-                resize_handle(Direction::NorthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::NorthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::North, Length::Fill, Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::NorthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
             ]
             .height(8)
             .width(Length::Fill),
             row![
-                resize_handle(Direction::West, Length::Fixed(8.0), Length::Fill),
+                resize_handle(window_id, Direction::West, Length::Fixed(8.0), Length::Fill),
                 Space::new().width(Length::Fill).height(Length::Fill),
-                resize_handle(Direction::East, Length::Fixed(8.0), Length::Fill),
+                resize_handle(window_id, Direction::East, Length::Fixed(8.0), Length::Fill),
             ]
             .width(Length::Fill)
             .height(Length::Fill),
             row![
-                resize_handle(Direction::SouthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
-                resize_handle(Direction::South, Length::Fill, Length::Fixed(8.0)),
-                resize_handle(Direction::SouthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::SouthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::South, Length::Fill, Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::SouthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
             ]
             .height(8)
             .width(Length::Fill),
@@ -136,12 +150,71 @@ impl App {
         stack![main_content, resize_overlay].into()
     }
 
-    fn view_title_bar(&self) -> Element<'_, Message> {
+    fn view_log_window(&self, window_id: window::Id) -> Element<'_, Message> {
+        let top_separator = container(Space::new().height(1))
+            .width(Length::Fill)
+            .style(|_| iced::widget::container::Style {
+                background: Some(iced::Background::Color(t::border_subtle())),
+                ..Default::default()
+            });
+
+        let content = container(self.view_log_panel())
+            .padding(16)
+            .width(Length::Fill)
+            .height(Length::Fill);
+
+        let main_content = container(column![
+            self.view_title_bar(window_id),
+            top_separator,
+            content,
+        ])
+        .padding(1)
+        .style(|_| iced::widget::container::Style {
+            background: Some(iced::Background::Color(t::bg())),
+            border: iced::Border {
+                color: t::border_strong(),
+                width: 1.0,
+                radius: 12.0.into(),
+            },
+            ..Default::default()
+        })
+        .clip(true);
+
+        let resize_overlay = column![
+            row![
+                resize_handle(window_id, Direction::NorthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::North, Length::Fill, Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::NorthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
+            ]
+            .height(8)
+            .width(Length::Fill),
+            row![
+                resize_handle(window_id, Direction::West, Length::Fixed(8.0), Length::Fill),
+                Space::new().width(Length::Fill).height(Length::Fill),
+                resize_handle(window_id, Direction::East, Length::Fixed(8.0), Length::Fill),
+            ]
+            .width(Length::Fill)
+            .height(Length::Fill),
+            row![
+                resize_handle(window_id, Direction::SouthWest, Length::Fixed(8.0), Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::South, Length::Fill, Length::Fixed(8.0)),
+                resize_handle(window_id, Direction::SouthEast, Length::Fixed(8.0), Length::Fixed(8.0)),
+            ]
+            .height(8)
+            .width(Length::Fill),
+        ]
+        .width(Length::Fill)
+        .height(Length::Fill);
+
+        stack![main_content, resize_overlay].into()
+    }
+
+    fn view_title_bar(&self, window_id: window::Id) -> Element<'_, Message> {
         let icon = svg(svg::Handle::from_memory(ICON_SVG))
             .width(Length::Fixed(22.0))
             .height(Length::Fixed(22.0));
 
-        let title = text("Musicerer v0.3").size(13).style(t::muted_text_strong);
+        let title = text(format!("Musicerer v{}", env!("CARGO_PKG_VERSION"))).size(13).style(t::muted_text_strong);
 
         let min_btn = button(
             container(
@@ -154,7 +227,7 @@ impl App {
             )
             .center_y(Length::Fill),
         )
-        .on_press(Message::WindowMinimize)
+        .on_press(Message::WindowMinimize(window_id))
         .style(t::window_control_button)
         .height(Length::Fixed(36.0))
         .padding([0, 16]);
@@ -170,7 +243,7 @@ impl App {
             )
             .center_y(Length::Fill),
         )
-        .on_press(Message::WindowMaximize)
+        .on_press(Message::WindowMaximize(window_id))
         .style(t::window_control_button)
         .height(Length::Fixed(36.0))
         .padding([0, 16]);
@@ -186,7 +259,7 @@ impl App {
             )
             .center_y(Length::Fill),
         )
-        .on_press(Message::WindowClose)
+        .on_press(Message::WindowClose(window_id))
         .style(t::close_button)
         .height(Length::Fixed(36.0))
         .padding([0, 16]);
@@ -199,7 +272,7 @@ impl App {
                 .height(Length::Fill)
                 .center_y(Length::Fill),
         )
-        .on_press(Message::WindowDragged);
+        .on_press(Message::WindowDragged(window_id));
 
         container(
             row![drag_area, min_btn, max_btn, close_btn]
@@ -297,6 +370,7 @@ impl App {
         container(card)
             .width(Length::Fill)
             .height(Length::Fill)
+            .padding([12, 14])
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(|_| iced::widget::container::Style {
@@ -356,6 +430,7 @@ impl App {
         container(card)
             .width(Length::Fill)
             .height(Length::Fill)
+            .padding([12, 14])
             .center_x(Length::Fill)
             .center_y(Length::Fill)
             .style(|_| iced::widget::container::Style {
@@ -473,7 +548,43 @@ impl App {
         .width(Length::Fill)
         .padding([8, 10]);
 
-        let nav = column![downloads_btn, settings_btn]
+        let installation_active = self.current_view == View::Installation;
+        let update_badge: Element<'_, Message> = if updater::any_available(&self.updater) {
+            svg(svg::Handle::from_memory(ICON_DOT))
+                .width(Length::Fixed(8.0))
+                .height(Length::Fixed(8.0))
+                .style(|_, _| svg::Style {
+                    color: Some(t::primary()),
+                })
+                .into()
+        } else {
+            Space::new().width(Length::Fixed(8.0)).into()
+        };
+        let update_btn = button(
+            row![
+                svg(svg::Handle::from_memory(ICON_PLUG))
+                    .width(Length::Fixed(16.0))
+                    .height(Length::Fixed(16.0))
+                    .style(move |_, _| svg::Style {
+                        color: Some(if installation_active {
+                            t::text_primary()
+                        } else {
+                            t::text_secondary()
+                        }),
+                    }),
+                text("Installation").size(13),
+                Space::new().width(Length::Fill),
+                update_badge,
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .on_press(Message::SwitchView(View::Installation))
+        .style(t::nav_button(installation_active))
+        .width(Length::Fill)
+        .padding([8, 10]);
+
+        let nav = column![downloads_btn, settings_btn, update_btn]
             .spacing(6)
             .padding([0, 8]);
 
@@ -530,7 +641,7 @@ impl App {
         .width(Length::Fill);
 
         let track_count = self.tracks().count();
-        let resolving = self.queue.iter().any(|i| i.resolving);
+        let loading = self.is_loading();
 
         let queue_header = row![
             text("Queue").size(14),
@@ -586,19 +697,7 @@ impl App {
             .width(Length::Fill)
             .height(Length::Fill);
 
-        let has_run = self.tracks().any(|t| {
-            matches!(
-                t.status,
-                ItemStatus::Done
-                    | ItemStatus::Failed
-                    | ItemStatus::Unavailable
-                    | ItemStatus::DrmSkipped
-                    | ItemStatus::Skipped
-                    | ItemStatus::Stopped
-            )
-        });
-        
-        let btn_label = if !self.downloading && has_run {
+        let btn_label = if self.is_retry_mode() {
             "Retry All"
         } else {
             "Download All"
@@ -606,14 +705,14 @@ impl App {
 
         let download_all = button(text(btn_label).size(13))
             .on_press_maybe(
-                (!self.downloading && !self.queue.is_empty() && !resolving)
+                (!self.downloading && !self.queue.is_empty() && !loading)
                     .then_some(Message::StartQueue),
             )
             .style(t::primary_button)
             .padding([8, 14]);
 
         let stop = button(text("Stop").size(13))
-            .on_press_maybe((self.downloading || resolving).then_some(Message::StopQueue))
+            .on_press_maybe((self.downloading || loading).then_some(Message::StopQueue))
             .style(t::secondary_button)
             .padding([8, 14]);
 
@@ -625,14 +724,14 @@ impl App {
             .padding([8, 14]);
 
         let log_toggle = {
-            let label = text(if self.show_log {
-                "Hide Log"
+            let is_open = self.log_window_id.is_some();
+            let (label, msg) = if is_open {
+                ("Hide Log", Message::CloseLogWindow)
             } else {
-                "Show Log"
-            })
-            .size(13);
-            let btn = button(label).on_press(Message::ToggleLog).padding([8, 12]);
-            if self.log_attention > 0 {
+                ("Show Log", Message::OpenLogWindow)
+            };
+            let btn = button(text(label).size(13)).on_press(msg).padding([8, 12]);
+            if is_open || self.log_attention > 0 {
                 btn.style(t::primary_button)
             } else {
                 btn.style(t::secondary_button)
@@ -664,9 +763,7 @@ impl App {
             content = content.push(progress);
         }
 
-        if self.show_log {
-            content = content.push(self.view_log_panel());
-        }
+        
 
         content.into()
     }
@@ -871,26 +968,74 @@ impl App {
         .into()
     }
 
+    fn view_update_prompt(&self) -> Element<'_, Message> {
+        let latest = updater::snapshot(&self.updater)
+            .into_iter()
+            .find(|(c, _)| *c == Component::App)
+            .and_then(|(_, r)| r.latest)
+            .unwrap_or_default();
+
+        let card = container(
+            column![
+                text("Update available").size(18),
+                Space::new().height(14),
+                text(format!(
+                    "Musicerer {latest} is available. You are on v{}.",
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .size(13),
+                Space::new().height(20),
+                row![
+                    Space::new().width(Length::Fill),
+                    button(text("Later").size(13))
+                        .on_press(Message::DismissUpdatePrompt)
+                        .style(t::secondary_button)
+                        .padding([10, 16]),
+                    button(text("View update").size(13))
+                        .on_press(Message::UpdatePromptView)
+                        .style(t::primary_button)
+                        .padding([10, 24]),
+                ]
+                .spacing(8),
+            ]
+            .spacing(0),
+        )
+        .style(t::card_elevated)
+        .padding(28)
+        .width(Length::Fixed(420.0));
+
+        container(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding([12, 14])
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| iced::widget::container::Style {
+                background: Some(iced::Background::Color(Color {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.75,
+                })),
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn view_status_bar(&self) -> Element<'_, Message> {
         let status_text = text(self.status.as_str()).size(11).style(t::muted_text);
-        let done = self
-            .tracks()
-            .filter(|i| i.status == ItemStatus::Done)
-            .count();
-        let unavailable = self
-            .tracks()
-            .filter(|i| i.status == ItemStatus::Unavailable)
-            .count();
-        let bad = self
-            .tracks()
-            .filter(|i| matches!(i.status, ItemStatus::Failed | ItemStatus::Stopped))
-            .count();
+        let (mut total, mut done, mut unavailable, mut bad) = (0usize, 0usize, 0usize, 0usize);
+        for t in self.tracks() {
+            total += 1;
+            match t.status {
+                ItemStatus::Done => done += 1,
+                ItemStatus::Unavailable => unavailable += 1,
+                ItemStatus::Failed | ItemStatus::Stopped => bad += 1,
+                _ => {}
+            }
+        }
         let counts = text(format!(
-            "{} tracks  |  {} done  |  {} unavailable  |  {} failed",
-            self.tracks().count(),
-            done,
-            unavailable,
-            bad
+            "{total} tracks  |  {done} done  |  {unavailable} unavailable  |  {bad} failed"
         ))
         .size(11)
         .style(t::muted_text_strong);

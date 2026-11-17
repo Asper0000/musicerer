@@ -79,6 +79,7 @@ pub fn move_into_dir(src: &Path, dir: &Path, stem: &str) -> io::Result<PathBuf> 
     Ok(dest)
 }
 
+#[allow(dead_code)]
 pub fn find_file_ext(dir: &Path, ext: &str) -> Option<PathBuf> {
     let mut best: Option<(u64, PathBuf)> = None;
     for entry in fs::read_dir(dir).ok()?.flatten() {

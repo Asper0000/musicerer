@@ -2,6 +2,7 @@
 
 use super::TrackResult;
 use std::collections::VecDeque;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread;
@@ -25,6 +26,15 @@ pub fn auto_worker_count() -> usize {
         .clamp(2, MAX_WORKERS)
 }
 
+/// A SoundCloud track that SoundCloud will not serve (DRM, Go+ preview). Its
+/// audio comes from a YouTube match while every piece of metadata still
+/// follows the SoundCloud track in `Job::url`.
+#[derive(Debug, Clone)]
+pub struct StandIn {
+    pub youtube_url: String,
+    pub soundcloud: crate::backend::soundcloud_meta::SoundCloudMeta,
+}
+
 #[derive(Debug, Clone)]
 pub struct Job {
     pub id: u64,
@@ -36,6 +46,7 @@ pub struct Job {
     pub deezer: Option<crate::backend::deezer::DeezerMeta>,
     pub itunes: Option<crate::backend::itunes::ITunesMeta>,
     pub folder: Option<String>,
+    pub stand_in: Option<StandIn>,
 }
 
 impl Job {
@@ -50,6 +61,7 @@ impl Job {
             deezer: None,
             itunes: None,
             folder: None,
+            stand_in: None,
         }
     }
     pub fn can_retry(&self) -> bool {
@@ -69,7 +81,6 @@ pub struct Tally {
     pub succeeded: usize,
     pub failed: usize,
     pub unavailable: usize,
-    pub drm: usize,
     pub skipped: usize,
     pub stopped: bool,
 }
@@ -78,7 +89,6 @@ impl Tally {
     fn record(&mut self, result: TrackResult) {
         match result {
             TrackResult::Ok => self.succeeded += 1,
-            TrackResult::Drm => self.drm += 1,
             TrackResult::Skipped => self.skipped += 1,
             TrackResult::Unavailable => self.unavailable += 1,
             TrackResult::Error => self.failed += 1,
@@ -199,7 +209,9 @@ where
 {
     while let Some(mut job) = next_job(shared, stop) {
         let mut retry = false;
-        match run(&job) {
+        let outcome = catch_unwind(AssertUnwindSafe(|| run(&job)))
+            .unwrap_or(Outcome::Finished(TrackResult::Error));
+        match outcome {
             Outcome::Finished(result) => {
                 lock(&shared.tally).record(result);
                 if result == TrackResult::Ok {

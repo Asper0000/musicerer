@@ -12,15 +12,16 @@ pub mod deezer;
 pub mod itunes;
 pub mod enrich;
 pub mod enrich_cache;
+mod http;
 pub mod soundcloud;
 pub mod soundcloud_meta;
 pub mod spotify;
 pub mod tools;
+pub mod updater;
 pub mod vpn;
 pub mod youtube;
 
-/// Backwards-compat: existing code refers to `soundcloud_fallback`.
-pub use soundcloud::fallback as soundcloud_fallback;
+pub use soundcloud::oembed as soundcloud_oembed;
 
 pub use download::spawn_worker;
 pub use utils::{cleanup_stale_temp_dirs, sanitize_filename};
@@ -32,7 +33,7 @@ use std::sync::{Arc, Mutex};
 pub type Inbox = Arc<Mutex<Vec<WorkerEvent>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrackResult { Ok, Drm, Unavailable, Error, Skipped, Stopped }
+pub enum TrackResult { Ok, Unavailable, Error, Skipped, Stopped }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source { SoundCloud, YouTube, Spotify, Deezer, ITunes, Unsupported }
@@ -90,7 +91,7 @@ pub enum WorkerEvent {
     Thumbnail { id: u64, thumb: Option<Thumb> },
     Log { level: LogLevel, text: String },
     TrackFinished { id: u64, result: TrackResult },
-    QueueFinished { succeeded: usize, failed: usize, unavailable: usize, drm: usize, skipped: usize, stopped: bool },
+    QueueFinished { succeeded: usize, failed: usize, unavailable: usize, skipped: usize, stopped: bool },
 
     PreviewReady {
         id: u64,

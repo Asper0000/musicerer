@@ -6,6 +6,10 @@ use std::io::Read;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    crate::backend::http::agent_with_global_timeout(None, Duration::from_secs(20))
+});
+
 const MAX_REQUESTS: usize = 20;
 const WINDOW: Duration = Duration::from_secs(60);
 const BURST_DELAY: Duration = Duration::from_secs(1);
@@ -55,15 +59,14 @@ fn wait_for_slot() {
 fn get_json(url: &str) -> Result<Value, String> {
     wait_for_slot();
 
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
-    let resp = agent
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json")
         .call()
         .map_err(|e| format!("iTunes API: {e}"))?;
     
-    let v: Value = resp.into_json().map_err(|e| format!("iTunes JSON: {e}"))?;
+    let v: Value = resp.body_mut().read_json().map_err(|e| format!("iTunes JSON: {e}"))?;
     Ok(v)
 }
 
@@ -81,18 +84,17 @@ pub fn search_track(title: &str, artist: &str, duration_ms: Option<u64>) -> Resu
     };
 
     wait_for_slot();
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
-    let resp = agent
+    let mut resp = AGENT
         .get("https://itunes.apple.com/search")
         .query("term", &term)
         .query("entity", "song")
         .query("limit", "5")
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/json")
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/json")
         .call()
         .map_err(|e| format!("iTunes API: {e}"))?;
         
-    let v: Value = resp.into_json().map_err(|e| format!("iTunes JSON: {e}"))?;
+    let v: Value = resp.body_mut().read_json().map_err(|e| format!("iTunes JSON: {e}"))?;
     let results = match v.get("results").and_then(Value::as_array) {
         Some(arr) => arr,
         None => return Ok(None),
@@ -187,14 +189,13 @@ pub fn fetch_playlist_metas(url: &str) -> Result<Vec<ITunesMeta>, String> {
 }
 
 pub fn fetch_cover_bytes(url: &str) -> Result<Vec<u8>, String> {
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).build();
-    let resp = agent
+    let mut resp = AGENT
         .get(url)
-        .set("User-Agent", USER_AGENT)
+        .header("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| e.to_string())?;
     let mut bytes = Vec::new();
-    resp.into_reader()
+    resp.body_mut().as_reader()
         .take(4 * 1024 * 1024)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;

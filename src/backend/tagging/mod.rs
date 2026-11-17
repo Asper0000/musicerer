@@ -11,7 +11,7 @@ mod write;
 use crate::backend::deezer::{self, DeezerMeta};
 use crate::backend::enrich::Enrichment;
 use crate::backend::itunes::{self, ITunesMeta};
-use crate::backend::soundcloud_fallback;
+use crate::backend::soundcloud_oembed;
 use crate::backend::soundcloud_meta;
 use crate::backend::spotify::{self, SpotifyMeta};
 use crate::backend::{audio, detect_source, emit, log, Inbox, LogLevel, Source, WorkerEvent};
@@ -20,10 +20,16 @@ use merge::{ExistingTags, MergeInput};
 use std::path::Path;
 
 /// Tags the file in place and returns the final display title.
+///
+/// `url` identifies the track whose metadata is written. `stand_in_audio` is true
+/// when the audio was downloaded from a different upload (a SoundCloud track
+/// served from YouTube): that file's own info.json, tags and thumbnail describe
+/// the other upload, so they are ignored.
 #[allow(clippy::too_many_arguments)]
 pub fn tag_audio(
     audio_path: &Path,
     url: &str,
+    stand_in_audio: bool,
     inbox: &Inbox,
     id: u64,
     label: &str,
@@ -32,10 +38,11 @@ pub fn tag_audio(
     itunes: Option<&ITunesMeta>,
     enrichment: Option<&Enrichment>,
 ) -> String {
-    let native = native::extract(audio_path);
+    let native = if stand_in_audio { native::NativeMeta::empty() } else { native::extract(audio_path) };
+    let source = detect_source(url);
 
     // Collect the existing tags as one more (lowest-priority) source.
-    let existing_owned = if native.info_missing() {
+    let existing_owned = if native.info_missing() && !stand_in_audio {
         read_existing_tags(audio_path)
     } else {
         None
@@ -45,39 +52,36 @@ pub fn tag_audio(
     // release year on label uploads. The cache is checked first because
     // enrich::for_download (which ran earlier in download_one) already
     // fetched the same URL for SC-sourced audio - reuse it for free.
-    let sc_owned = if detect_source(url) == Source::SoundCloud {
-        if let Some(cached) = crate::backend::enrich_cache::get_sc(url) {
-            Some(cached)
-        } else {
-            match soundcloud_meta::fetch(url) {
-                Ok(sc) => {
-                    crate::backend::enrich_cache::put_sc(url, sc.clone());
-                    Some(sc)
-                }
-                Err(e) => {
-                    log(
-                        inbox,
-                        LogLevel::Info,
-                        format!("[{label}] SoundCloud hydration: {e}"),
-                    );
-                    None
-                }
+    let sc_owned = if source == Source::SoundCloud {
+        match soundcloud_meta::fetch_cached(url) {
+            Ok(sc) => Some(sc),
+            Err(e) => {
+                log(
+                    inbox,
+                    LogLevel::Info,
+                    format!("[{label}] SoundCloud hydration: {e}"),
+                );
+                None
             }
         }
     } else {
         None
     };
 
-    // oEmbed fallback for title / cover. Same call as before; results are
-    // fed into the merge rather than mutating variables in place.
-    let (oembed_title, oembed_cover) = match soundcloud_fallback::fetch_oembed(url) {
-        Ok((t, maybe_thumb)) => {
-            let cover = maybe_thumb
-                .as_deref()
-                .and_then(|bytes| audio::square_cover_from_bytes(bytes).ok());
-            (Some(t), cover)
+    // oEmbed is only meaningful for SoundCloud sources. On any other source
+    // the request is a guaranteed round-trip that fails, so skip it.
+    let (oembed_title, oembed_cover) = if source == Source::SoundCloud {
+        match soundcloud_oembed::fetch_oembed(url) {
+            Ok((t, maybe_thumb)) => {
+                let cover = maybe_thumb
+                    .as_deref()
+                    .and_then(|bytes| audio::square_cover_from_bytes(bytes).ok());
+                (Some(t), cover)
+            }
+            Err(_) => (None, None),
         }
-        Err(_) => (None, None),
+    } else {
+        (None, None)
     };
 
     // Metadata-source cover bytes (downloaded here so the merge can pick
@@ -93,16 +97,9 @@ pub fn tag_audio(
     let itunes_cover = itunes
         .and_then(|it| it.cover_url.as_deref())
         .and_then(|u| itunes::fetch_cover_bytes(u).ok())
-        .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok())
-        // If we don't have direct iTunes metadata, check the enrichment tier
-        .or_else(|| {
-            enrichment
-                .and_then(|e| e.cover_url.as_deref())
-                .and_then(|u| itunes::fetch_cover_bytes(u).ok())
-                .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok())
-        });
+        .and_then(|bytes| audio::square_cover_from_bytes(&bytes).ok());
 
-    let disk_cover = cover::from_disk(audio_path, inbox, label);
+    let disk_cover = if stand_in_audio { None } else { cover::from_disk(audio_path, inbox, label) };
 
     let fallback_filename = audio_path
         .file_stem()
@@ -158,7 +155,7 @@ fn read_existing_tags(audio_path: &Path) -> Option<ExistingTags> {
     Some(ExistingTags {
         title: tag.title().map(|s| s.to_string()),
         artist: tag.artist().map(|s| s.to_string()),
-        album: tag.album_title().map(|s| s.to_string()),
+        album: tag.album().map(|album| album.title.to_string()),
         cover: tag.album_cover().map(|pic| pic.data.to_vec()),
     })
 }

@@ -1,17 +1,19 @@
 use super::process;
-use super::scheduler::{self, Job, Outcome};
+use super::scheduler::{self, Job, Outcome, StandIn};
 use super::spotify::SpotifyMeta;
 use super::{
-    audio, detect_source, emit, enrich, log, soundcloud, soundcloud_fallback, tagging,
+    audio, detect_source, emit, enrich, log, search_score, soundcloud, soundcloud_meta,
+    tagging,
     tools::{self, Tool}, utils, youtube, Inbox, LogLevel, Source, TrackResult, WorkerEvent,
 };
 use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::process::{ChildStderr, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 const FRAGMENT_BUDGET: usize = 20;
@@ -46,7 +48,14 @@ pub fn spawn_worker(
     skip_existing: bool,
 ) {
     thread::spawn(move || {
-        run_queue(items, output_dir, cookies, inbox, stop_flag, skip_existing);
+        let failed_total = items.len();
+        let fallback_inbox = inbox.clone();
+        if catch_unwind(AssertUnwindSafe(|| run_queue(items, output_dir, cookies, inbox, stop_flag, skip_existing))).is_err() {
+            log(&fallback_inbox, LogLevel::Error, "Download worker stopped after an unexpected panic.");
+            emit(&fallback_inbox, WorkerEvent::QueueFinished {
+                succeeded: 0, failed: failed_total, unavailable: 0, skipped: 0, stopped: false,
+            });
+        }
     });
 }
 
@@ -66,7 +75,6 @@ fn run_queue(
             succeeded: 0,
             failed: total,
             unavailable: 0,
-            drm: 0,
             skipped: 0,
             stopped: false,
         });
@@ -111,7 +119,6 @@ fn run_queue(
         succeeded: tally.succeeded,
         failed: tally.failed,
         unavailable: tally.unavailable,
-        drm: tally.drm,
         skipped: tally.skipped,
         stopped: tally.stopped,
     });
@@ -136,7 +143,6 @@ fn run_job(ctx: &DownloadCtx, job: &Job) -> Outcome {
 
     match result {
         TrackResult::Ok => tlog(ctx, job, LogLevel::Info, "Completed."),
-        TrackResult::Drm => tlog(ctx, job, LogLevel::Warn, "DRM-protected - skipped. yt-dlp does not bypass DRM."),
         TrackResult::Unavailable => tlog(ctx, job, LogLevel::Warn, "YouTube reports this video as unavailable; skipped."),
         TrackResult::Skipped => {}
         TrackResult::Error => tlog(ctx, job, LogLevel::Error, "Failed."),
@@ -165,9 +171,43 @@ fn is_http_403(error_text: &str) -> bool {
     error_text.contains("http error 403") || error_text.contains("http 403")
 }
 
+/// SoundCloud reports DRM / Go+ protected tracks with this wording.
 fn is_drm_protected(error_text: &str) -> bool {
     error_text.split(|c: char| !c.is_alphanumeric()).any(|word| word == "drm")
         || error_text.contains("is protected")
+}
+
+/// SoundCloud will not serve this track (DRM or Go+ preview). Match the same
+/// song on YouTube for the audio, like the Spotify/Deezer/Apple Music resolvers,
+/// and re-run the download with that match standing in. Metadata keeps
+/// following the SoundCloud track.
+fn youtube_stand_in(ctx: &DownloadCtx, job: &Job) -> Outcome {
+    let fin = Outcome::Finished;
+    tlog(ctx, job, LogLevel::Warn, "SoundCloud cannot download this track; matching the audio on YouTube.");
+
+    let sc = match soundcloud_meta::fetch_cached(&job.url) {
+        Ok(sc) => sc,
+        Err(err) => {
+            tlog(ctx, job, LogLevel::Error, format!("Could not read SoundCloud track info for the YouTube match: {err}"));
+            return fin(TrackResult::Error);
+        }
+    };
+    let title = sc.title.as_deref().unwrap_or_default();
+    let artist = sc.artist.as_deref().or(sc.uploader.as_deref()).unwrap_or_default();
+
+    match search_score::resolve_youtube(title, artist, sc.duration_ms, &ctx.stop_flag) {
+        Ok(youtube_url) => {
+            tlog(ctx, job, LogLevel::Info, format!("Matched on YouTube: {youtube_url}"));
+            let mut sub = job.clone();
+            sub.stand_in = Some(StandIn { youtube_url, soundcloud: sc });
+            download_one(ctx, &sub)
+        }
+        Err(_) if ctx.stop_flag.load(Ordering::Relaxed) => fin(TrackResult::Stopped),
+        Err(err) => {
+            tlog(ctx, job, LogLevel::Error, format!("No YouTube match for this SoundCloud track: {err}"));
+            fin(TrackResult::Error)
+        }
+    }
 }
 
 /// Size in bytes of the largest in-progress or finished download file in `dir`.
@@ -240,6 +280,7 @@ fn pump_stderr(
     source: Source,
     stderr: ChildStderr,
     errors: &mut VecDeque<String>,
+    dest_path: &Mutex<Option<PathBuf>>,
 ) {
     let mut reader = BufReader::new(stderr);
     let mut buf = Vec::new();
@@ -256,12 +297,14 @@ fn pump_stderr(
         }
 
         if let Some(rest) = clean.strip_prefix("[download] Destination: ") {
-            if let Some(stem) = Path::new(rest).file_stem() {
+            let path = PathBuf::from(rest.trim());
+            if let (Some(stem), None) = (path.file_stem(), &job.stand_in) {
                 emit(&ctx.inbox, WorkerEvent::TrackTitle {
                     id: job.id,
                     title: stem.to_string_lossy().to_string(),
                 });
             }
+            *dest_path.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
             continue;
         }
 
@@ -274,7 +317,7 @@ fn pump_stderr(
         }
 
         let lower = clean.to_ascii_lowercase();
-        if lower.contains("error") || is_drm_protected(&lower) {
+        if lower.contains("error") {
             errors.push_back(clean.clone());
             while errors.len() > ERROR_HISTORY {
                 errors.pop_front();
@@ -305,7 +348,13 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         return fin(TrackResult::Error);
     }
 
+    // `url` and `source` identify the track (metadata, tags). The audio normally
+    // comes from the same place, except for a SoundCloud track standing in on YouTube.
     let source = detect_source(url);
+    let (media_url, media_source) = match &job.stand_in {
+        Some(stand_in) => (stand_in.youtube_url.as_str(), Source::YouTube),
+        None => (url, source),
+    };
 
     let temp = match tempfile::Builder::new().prefix("musicerer-tmp-").tempdir() {
         Ok(dir) => dir,
@@ -318,7 +367,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     let mut cmd = tools::command(Tool::YtDlp);
     add_common_args(&mut cmd, &temp.path().join("%(title)s.%(ext)s"));
 
-    match source {
+    match media_source {
         Source::YouTube => {
             youtube::download::add_args(&mut cmd, job.fallback_attempt, ctx.fragments)
         }
@@ -337,7 +386,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         cmd.arg("--cookies").arg(cookies);
     }
 
-    cmd.arg(url)
+    cmd.arg(media_url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -359,6 +408,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     let pid = child.id();
     let finished = AtomicBool::new(false);
     let mut errors = VecDeque::with_capacity(ERROR_HISTORY);
+    let dest_path: Mutex<Option<PathBuf>> = Mutex::new(None);
     let status = thread::scope(|scope| {
         scope.spawn(|| process::watch_for_stop(pid, &ctx.stop_flag, &finished));
 
@@ -391,7 +441,22 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
                     }
                 }
 
-                let current = largest_download_file_size(temp_path);
+                let current = {
+                    let guard = dest_path.lock().unwrap_or_else(|e| e.into_inner());
+                    match guard.as_ref() {
+                        Some(p) => {
+                            let mut part_os = p.clone().into_os_string();
+                            part_os.push(".part");
+                            let part = PathBuf::from(part_os);
+                            let direct = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                            let part_sz = fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
+                            direct.max(part_sz)
+                        }
+                        // Until pump_stderr prints the destination line, fall
+                        // back to the temp dir scan (very briefly at start).
+                        None => largest_download_file_size(temp_path),
+                    }
+                };
                 if current > 0 {
                     if assumed_max == 0 {
                         if !logged_fallback {
@@ -412,7 +477,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
             }
         });
 
-        pump_stderr(ctx, job, source, stderr, &mut errors);
+        pump_stderr(ctx, job, media_source, stderr, &mut errors, &dest_path);
         let status = child.wait();
         finished.store(true, Ordering::SeqCst);
         status
@@ -425,35 +490,31 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     let error_text = errors.iter().cloned().collect::<Vec<_>>().join("\n").to_ascii_lowercase();
     if let Ok(s) = status {
         if !s.success() {
-            if source == Source::YouTube && is_video_unavailable(&error_text) {
+            if media_source == Source::YouTube && is_video_unavailable(&error_text) {
                 return fin(TrackResult::Unavailable);
             }
             if is_rate_limited(&error_text) {
                 return Outcome::RateLimited;
             }
-            if source == Source::YouTube && is_http_403(&error_text) && job.fallback_attempt == 0 {
+            if media_source == Source::YouTube && is_http_403(&error_text) && job.fallback_attempt == 0 {
                 return Outcome::RetryWithFallback;
             }
-            if !is_drm_protected(&error_text) {
-                return fin(TrackResult::Error);
+            if media_source == Source::SoundCloud && is_drm_protected(&error_text) {
+                return youtube_stand_in(ctx, job);
             }
-            if let Err(r) = soundcloud_fallback::handle_drm(
-                url, source, temp.path(), &ctx.inbox, &ctx.stop_flag,
-            ) {
-                return fin(r);
-            }
+            return fin(TrackResult::Error);
         }
     }
 
     let Some(audio_path) = audio::find_audio(temp.path()) else {
-        if source == Source::YouTube && is_video_unavailable(&error_text) {
+        if media_source == Source::YouTube && is_video_unavailable(&error_text) {
             return fin(TrackResult::Unavailable);
         }
         tlog(ctx, job, LogLevel::Error, "yt-dlp finished but no audio file was found.");
         return fin(TrackResult::Error);
     };
 
-    if source == Source::SoundCloud {
+    if media_source == Source::SoundCloud {
         let reported = get_yt_dlp_duration(&audio_path);
         let actual = tools::find(Tool::Ffprobe)
             .and_then(|ffprobe| get_audio_duration(&ffprobe, &audio_path).ok());
@@ -463,9 +524,8 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
             _ => false,
         };
         if is_preview {
-            tlog(ctx, job, LogLevel::Error,
-                "SoundCloud Go+ preview detected. Failing due to Go+ protection.");
-            return fin(TrackResult::Error);
+            tlog(ctx, job, LogLevel::Warn, "SoundCloud Go+ preview detected.");
+            return youtube_stand_in(ctx, job);
         }
     }
 
@@ -475,6 +535,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
         job.spotify.as_ref(),
         job.deezer.as_ref(),
         job.itunes.as_ref(),
+        job.stand_in.as_ref().map(|s| &s.soundcloud),
         source,
         &ctx.inbox,
         &job.label,
@@ -483,6 +544,7 @@ fn download_one(ctx: &DownloadCtx, job: &Job) -> Outcome {
     let title = tagging::tag_audio(
         &audio_path,
         url,
+        job.stand_in.is_some(),
         &ctx.inbox,
         job.id,
         &job.label,

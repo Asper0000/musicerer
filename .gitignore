@@ -7,7 +7,6 @@ Thumbs.db
 
 # Tool binaries (large, supplied locally): Windows .exe files and Linux ELF files
 /tools
-/linux_tools
 
 # Build output
 /dist
@@ -15,3 +14,4 @@ versioning.md
 /scripts
 /docs
 patch.bat
+patch.ps1

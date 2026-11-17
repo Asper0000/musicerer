@@ -2,40 +2,136 @@ use super::helpers::{fallback_name, guess_name_from_url, FETCHING_TITLE, READING
 use super::{App, Message};
 use crate::backend::{
     deezer, detect_source, is_playlist_url, itunes, normalize_url, spawn_preview, spawn_resolve,
-    spawn_worker, spotify, Source,
+    spawn_worker, spotify, updater, Source,
 };
 use crate::ui::{ItemStatus, QueueItem, ThumbState, UiLogLevel, View};
 
 use iced::Task;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-fn is_unmatched(track: &QueueItem) -> bool {
-    (track.spotify.is_some() || track.deezer.is_some() || track.itunes.is_some()) && track.resolved_url.is_none()
+fn open_with_system_file_manager(path: &Path) {
+    // Some application directories are created lazily. Create the requested
+    // directory when necessary so the file manager has a real target to open.
+    if !path.exists() {
+        let _ = std::fs::create_dir_all(path);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        use std::os::windows::ffi::OsStrExt;
+
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                window: *mut c_void,
+                operation: *const u16,
+                file: *const u16,
+                parameters: *const u16,
+                directory: *const u16,
+                show_command: i32,
+            ) -> *mut c_void;
+        }
+
+        let operation: Vec<u16> = std::ffi::OsStr::new("open")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let target: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // ShellExecute delegates to the Windows shell's registered folder
+        // handler instead of hard-coding a particular file-manager process.
+        unsafe {
+            let _ = ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(path).spawn();
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
 }
 
 impl App {
+    pub fn open_log_window(&mut self) -> Task<Message> {
+        if self.log_window_id.is_none() {
+            let icon = iced::window::icon::from_file_data(include_bytes!("../../assets/icon.ico"), None).ok();
+            let settings = iced::window::Settings {
+                size: iced::Size::new(600.0, 400.0),
+                min_size: Some(iced::Size::new(400.0, 200.0)),
+                decorations: false,
+                transparent: true,
+                icon,
+                ..Default::default()
+            };
+            let (id, task) = iced::window::open(settings);
+            self.log_window_id = Some(id);
+            return task.map(|_| Message::Noop);
+        }
+        Task::none()
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::WindowDragged => {
-                return iced::window::latest().and_then(iced::window::drag);
+            Message::WindowDragged(id) => {
+                return iced::window::drag(id).map(|_: ()| Message::Noop);
             }
-            Message::WindowMinimize => {
-                return iced::window::latest().and_then(|id| iced::window::minimize(id, true));
+            Message::WindowMinimize(id) => {
+                return iced::window::minimize(id, true).map(|_: ()| Message::Noop);
             }
-            Message::WindowMaximize => {
-                return iced::window::latest().and_then(iced::window::toggle_maximize);
+            Message::WindowMaximize(id) => {
+                return iced::window::toggle_maximize(id).map(|_: ()| Message::Noop);
             }
-            Message::WindowClose => {
-                self.save_config();
-                return iced::window::latest().and_then(iced::window::close);
+            Message::WindowClose(id) => {
+                if Some(id) == self.main_window_id {
+                    self.save_config();
+                    return iced::exit();
+                } else {
+                    self.log_window_id = None;
+                    return iced::window::close(id).map(|_: ()| Message::Noop);
+                }
             }
-            Message::WindowResize(dir) => {
-                return iced::window::latest()
-                    .and_then(move |id| iced::window::drag_resize(id, dir));
+            Message::WindowResize(id, dir) => {
+                return iced::window::drag_resize(id, dir).map(|_: ()| Message::Noop);
             }
+            Message::WindowEvent(id, iced::window::Event::Closed) => {
+                if Some(id) == self.log_window_id {
+                    self.log_window_id = None;
+                } else if Some(id) == self.main_window_id {
+                    return iced::exit();
+                }
+            }
+            Message::WindowEvent(_, _) => {}
+            Message::OpenLogWindow => {
+                return self.open_log_window();
+            }
+            Message::CloseLogWindow => {
+                if let Some(id) = self.log_window_id.take() {
+                    return iced::window::close(id).map(|_: ()| Message::Noop);
+                }
+            }
+            Message::LogWindowOpened(id) => self.log_window_id = Some(id),
+            Message::MainWindowOpened(id) => self.main_window_id = Some(id),
             Message::OpenOutputDir => self.open_output_dir(),
+            Message::OpenInstallationDirectory(path) => open_with_system_file_manager(&path),
             Message::TogglePlatformsDialog => self.show_platforms = !self.show_platforms,
             Message::SwitchView(v) => {
                 if self.current_view == View::Settings && v != View::Settings {
@@ -46,7 +142,7 @@ impl App {
                 }
                 self.current_view = v;
             }
-            Message::ToggleLog => self.show_log = !self.show_log,
+
             Message::DismissVpnWarning => self.startup_vpn_warning = None,
             Message::SuppressVpnWarning => {
                 self.suppress_vpn_warning = true;
@@ -54,7 +150,13 @@ impl App {
                 self.save_config();
             }
             Message::UrlChanged(v) => self.url_input = v,
-            Message::AddUrl => self.add_url(),
+            Message::AddUrl => {
+                self.add_url();
+                if self.needs_log_window {
+                    self.needs_log_window = false;
+                    return self.open_log_window();
+                }
+            }
             Message::RemoveTrack(id) => self.remove_track(id),
             Message::ToggleGroup(id) => {
                 if let Some(group) = self
@@ -126,8 +228,122 @@ impl App {
                 self.start_queue();
             }
             Message::StopQueue => self.stop_all(),
-            Message::PollWorker => {
-                self.tick = self.tick.wrapping_add(1);
+            Message::CheckUpdates => updater::spawn_check_all(&self.updater, false),
+            Message::AskAppUpdate => {
+                if !(self.downloading || self.is_loading()) {
+                    self.confirm_app_update = true;
+                }
+            }
+            Message::CancelAppUpdate => self.confirm_app_update = false,
+            Message::InstallUpdate(comp) => {
+                self.confirm_app_update = false;
+                if self.downloading || self.is_loading() {
+                    self.push_log(
+                        UiLogLevel::Warn,
+                        "Finish or stop the current downloads before updating.",
+                    );
+                } else if !updater::is_busy(&self.updater) {
+                    updater::spawn_install(&self.updater, comp);
+                }
+            }
+            Message::InstallExternalTools => {
+                if self.downloading || self.is_loading() {
+                    self.push_log(
+                        UiLogLevel::Warn,
+                        "Finish or stop the current downloads before installing tools.",
+                    );
+                } else if !updater::is_busy(&self.updater) {
+                    updater::spawn_install_external(&self.updater);
+                }
+            }
+            Message::InstallManagedTool(comp) => {
+                if self.downloading || self.is_loading() {
+                    self.push_log(UiLogLevel::Warn, "Finish or stop the current downloads before installing tools.");
+                } else if updater::can_install_managed(&self.updater, comp) {
+                    updater::spawn_install_managed(&self.updater, comp);
+                }
+            }
+            Message::ReinstallManagedTool(comp) => {
+                if self.downloading || self.is_loading() {
+                    self.push_log(UiLogLevel::Warn, "Finish or stop the current downloads before reinstalling tools.");
+                } else if updater::can_reinstall_tool(&self.updater, comp) {
+                    updater::spawn_reinstall_tool(&self.updater, comp);
+                }
+            }
+            Message::UninstallManagedTool(comp) => {
+                if self.downloading || self.is_loading() {
+                    self.push_log(UiLogLevel::Warn, "Finish or stop the current downloads before removing tools.");
+                } else if !updater::is_busy(&self.updater) {
+                    updater::spawn_uninstall_tool(&self.updater, comp);
+                }
+            }
+            Message::AskAppReinstall => {
+                if !(self.downloading || self.is_loading() || updater::is_busy(&self.updater))
+                    && updater::can_reinstall_app(&self.updater)
+                {
+                    self.confirm_app_reinstall = true;
+                }
+            }
+            Message::CancelAppReinstall => self.confirm_app_reinstall = false,
+            Message::InstallAppReinstall => {
+                self.confirm_app_reinstall = false;
+                if self.downloading || self.is_loading() {
+                    self.push_log(UiLogLevel::Warn, "Finish or stop the current downloads before reinstalling Musicerer.");
+                } else if updater::can_reinstall_app(&self.updater) {
+                    updater::spawn_reinstall_app(&self.updater);
+                }
+            }
+            Message::OpenUninstallDialog => {
+                if !self.downloading && !self.is_loading() && !updater::is_busy(&self.updater) {
+                    self.uninstall_options = updater::UninstallOptions::default();
+                    self.show_uninstall_dialog = true;
+                }
+            }
+            Message::CloseUninstallDialog => self.show_uninstall_dialog = false,
+            Message::SetKeepSettings(value) => self.uninstall_options.keep_settings = value,
+            Message::SetKeepTools(value) => self.uninstall_options.keep_tools = value,
+            Message::SetKeepCache(value) => self.uninstall_options.keep_cache = value,
+            Message::SetKeepLogs(value) => self.uninstall_options.keep_logs = value,
+            Message::SetKeepOtherData(value) => self.uninstall_options.keep_other_data = value,
+            Message::SetKeepOutputDirectory(value) => self.uninstall_options.keep_output_directory = value,
+            Message::ConfirmUninstall => {
+                if self.downloading || self.is_loading() || updater::is_busy(&self.updater) {
+                    self.push_log(UiLogLevel::Warn, "Finish or stop active downloads and installation tasks before uninstalling.");
+                } else {
+                    self.show_uninstall_dialog = false;
+                    if self.uninstall_options.keep_settings {
+                        self.save_config();
+                    }
+                    updater::spawn_uninstall_app(
+                        &self.updater,
+                        self.uninstall_options.clone(),
+                        PathBuf::from(self.output_dir.clone()),
+                    );
+                }
+            }
+            Message::DismissUpdatePrompt => self.update_prompt = false,
+            Message::UpdatePromptView => {
+                self.update_prompt = false;
+                if self.current_view == View::Settings {
+                    self.save_config();
+                }
+                self.current_view = View::Installation;
+            }
+            Message::Noop => {},
+            Message::PollWorker => {self.tick = self.tick.wrapping_add(1);
+                self.updater_seen = updater::generation(&self.updater);
+                if updater::take_exit_request(&self.updater) {
+                    self.save_config();
+                    return iced::exit();
+                }
+                if let Some(error) = updater::take_uninstall_error(&self.updater) {
+                    self.push_log(UiLogLevel::Error, format!("Uninstallation could not be started: {error}"));
+                    self.log_attention = 16;
+                    self.needs_log_window = true;
+                }
+                if updater::take_app_prompt(&self.updater) {
+                    self.update_prompt = true;
+                }
                 self.log_attention = self.log_attention.saturating_sub(1);
                 let events = {
                     let mut g = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
@@ -135,6 +351,10 @@ impl App {
                 };
                 for e in events {
                     self.handle_worker_event(e);
+                }
+                if self.needs_log_window {
+                    self.needs_log_window = false;
+                    return self.open_log_window();
                 }
             }
         }
@@ -153,8 +373,8 @@ impl App {
 
     fn warn_visibly(&mut self, text: &str) {
         self.push_log(UiLogLevel::Warn, text);
-        self.show_log = true;
         self.log_attention = 16;
+        self.needs_log_window = true;
     }
 
     fn open_output_dir(&self) {
@@ -304,8 +524,8 @@ impl App {
                 return;
             }
         };
-        if self.queue.iter().any(|i| i.resolving) {
-            self.push_log(UiLogLevel::Warn, "Wait for playlists to finish loading first.");
+        if self.is_loading() {
+            self.push_log(UiLogLevel::Warn, "Wait for everything to finish loading first.");
             return;
         }
 
@@ -329,7 +549,7 @@ impl App {
             } else {
                 None
             };
-            for t in entry.tracks().filter(|t| !is_unmatched(t)) {
+            for t in entry.tracks().filter(|t| !t.unmatched()) {
                 let download_url = t.resolved_url.clone().unwrap_or_else(|| t.url.clone());
                 items.push((
                     t.id,
@@ -351,7 +571,7 @@ impl App {
 
         for item in &mut self.queue {
             item.for_each_track_mut(|t| {
-                if !is_unmatched(t) {
+                if !t.unmatched() {
                     t.status = ItemStatus::Pending;
                     t.progress = 0.0;
                 }
@@ -398,6 +618,15 @@ impl App {
         }
 
         if self.downloading {
+            // The scheduler drops queued jobs without reporting them, so mark
+            // them here; running jobs report Stopped themselves.
+            for item in &mut self.queue {
+                item.for_each_track_mut(|t| {
+                    if t.status == ItemStatus::Pending && !t.unmatched() {
+                        t.status = ItemStatus::Stopped;
+                    }
+                });
+            }
             self.status = "Stopping\u{2026}".to_string();
             self.push_log(
                 UiLogLevel::Warn,
