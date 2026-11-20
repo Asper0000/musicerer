@@ -68,16 +68,16 @@ impl InstallKind {
         }
     }
 
-    /// Ending of the release asset that matches this kind of install.
-    pub(super) fn asset_suffix(&self) -> &'static str {
+    /// Endings of the release assets that match this kind of install.
+    pub(super) fn asset_suffixes(&self) -> &'static [&'static str] {
         match self {
-            InstallKind::WinSetup => "-windows-x64-setup.exe",
-            InstallKind::WinPortable => "-windows-x64-portable.exe",
-            InstallKind::AppImage => ".AppImage",
-            InstallKind::LinuxPortable => "",
-            InstallKind::Deb => ".deb",
-            InstallKind::Rpm => ".rpm",
-            InstallKind::Unknown(_) => "",
+            InstallKind::WinSetup => &["-windows-x64-setup.exe"],
+            // "-portable-slim.exe" is the name builds before 0.3.1 used.
+            InstallKind::WinPortable => &["-windows-x64-portable.exe", "-windows-x64-portable-slim.exe"],
+            InstallKind::AppImage => &[".AppImage"],
+            InstallKind::Deb => &[".deb"],
+            InstallKind::Rpm => &[".rpm"],
+            InstallKind::LinuxPortable | InstallKind::Unknown(_) => &[],
         }
     }
 }

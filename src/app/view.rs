@@ -986,7 +986,6 @@ impl App {
                 .size(13),
                 Space::new().height(20),
                 row![
-                    Space::new().width(Length::Fill),
                     button(text("Later").size(13))
                         .on_press(Message::DismissUpdatePrompt)
                         .style(t::secondary_button)

@@ -513,8 +513,8 @@ fn check_app() -> Result<Checked, String> {
         });
     }
 
-    let suffix = kind.asset_suffix();
-    let asset = pick(&rel, |n| n.ends_with(suffix))?;
+    let suffixes = kind.asset_suffixes();
+    let asset = pick(&rel, |n| suffixes.iter().any(|suffix| n.ends_with(suffix)))?;
     let plan = plan_for(&rel, &asset, tag)?;
     if !is_newer(&latest_raw, APP_VERSION) {
         return Ok(Checked {
