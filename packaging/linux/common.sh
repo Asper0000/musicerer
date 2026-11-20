@@ -25,10 +25,13 @@ VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
 [[ -n "$VERSION" ]] || die "Could not read the version from Cargo.toml."
 
 case "$(uname -m)" in
-    x86_64)        RPM_ARCH=x86_64;  DEB_ARCH=amd64 ;;
-    aarch64|arm64) RPM_ARCH=aarch64; DEB_ARCH=arm64 ;;
+    x86_64)        RPM_ARCH=x86_64;  DEB_ARCH=amd64; NAME_ARCH=x64 ;;
+    aarch64|arm64) RPM_ARCH=aarch64; DEB_ARCH=arm64; NAME_ARCH=arm64 ;;
     *) die "Unsupported CPU architecture: $(uname -m)" ;;
 esac
+
+# Release file name shared by every Linux package: Musicerer-v<version>-linux-<x64|arm64>.<ext>
+artifact_name() { printf '%s-v%s-linux-%s.%s' "$APP_NAME" "$VERSION" "$NAME_ARCH" "$1"; }
 
 umask 022
 

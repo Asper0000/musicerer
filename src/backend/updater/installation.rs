@@ -72,7 +72,7 @@ impl InstallKind {
     pub(super) fn asset_suffix(&self) -> &'static str {
         match self {
             InstallKind::WinSetup => "-windows-x64-setup.exe",
-            InstallKind::WinPortable => "-windows-x64-portable-slim.exe",
+            InstallKind::WinPortable => "-windows-x64-portable.exe",
             InstallKind::AppImage => ".AppImage",
             InstallKind::LinuxPortable => "",
             InstallKind::Deb => ".deb",
@@ -335,7 +335,8 @@ fn start_uninstall_helper(options: UninstallOptions, output_dir: PathBuf) -> Res
             // without touching any remaining user files.
             cleanup.prune_dirs.push(parent.to_path_buf());
         }
-        spawn_windows_uninstall_helper(pid, uninstaller, remove_app_file, cleanup)
+        let elevate = !exe.parent().is_some_and(directory_is_writable);
+        spawn_windows_uninstall_helper(pid, uninstaller, elevate, remove_app_file, cleanup)
     }
 
     #[cfg(target_os = "linux")]
@@ -528,39 +529,106 @@ fn ps_quote(value: &str) -> String {
 }
 
 #[cfg(windows)]
+const WINDOWS_UNINSTALL_SCRIPT: &str = r#"$ErrorActionPreference = 'Continue'
+$TargetPid = __PID__
+$ScriptPath = $PSCommandPath
+$LogPath = Join-Path $env:TEMP 'musicerer-uninstall.log'
+$Problems = New-Object System.Collections.Generic.List[string]
+function Write-Log($text) { try { Add-Content -LiteralPath $LogPath -Value ('{0} {1}' -f (Get-Date -Format s), $text) } catch {} }
+function Show-Error($text) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show($text, 'Musicerer uninstall', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+    } catch {}
+}
+# Retries because antivirus, the search indexer or a dying child process can hold a file for a moment.
+function Remove-Path($path) {
+    for ($i = 0; $i -lt 20; $i++) {
+        if (-not (Test-Path -LiteralPath $path)) { return }
+        try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop; return } catch { Start-Sleep -Milliseconds 500 }
+    }
+    if (Test-Path -LiteralPath $path) { $Problems.Add("Could not remove $path"); Write-Log "Could not remove $path" }
+}
+function Remove-IfEmpty($path) {
+    if ((Test-Path -LiteralPath $path -PathType Container) -and -not (Get-ChildItem -LiteralPath $path -Force | Select-Object -First 1)) {
+        try { Remove-Item -LiteralPath $path -Force -ErrorAction Stop } catch { Write-Log "Could not remove empty folder ${path}: $($_.Exception.Message)" }
+    }
+}
+try {
+    Write-Log 'Uninstall helper started'
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Process -Id $TargetPid -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+    # Let the process release its file handles.
+    Start-Sleep -Milliseconds 500
+__UNINSTALLER__
+__REMOVALS__
+__PRUNES__
+    if ($Problems.Count -gt 0) {
+        Show-Error ("Musicerer was uninstalled, but some files could not be removed:`n`n" + (($Problems | Select-Object -First 8) -join "`n") + "`n`nDetails: $LogPath")
+    }
+    Write-Log 'Uninstall helper finished'
+} catch {
+    Write-Log ('Uninstall failed: ' + $_.Exception.Message)
+    Show-Error ('Musicerer could not be uninstalled: ' + $_.Exception.Message + "`n`nDetails: $LogPath")
+} finally { Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue }
+"#;
+
+#[cfg(windows)]
+const WINDOWS_RUN_UNINSTALLER: &str = r#"    $Uninstaller = __PATH__
+    if (-not (Test-Path -LiteralPath $Uninstaller)) { throw 'The native uninstaller is missing.' }
+    # Only ask for administrator rights when the install folder needs them. A per-user
+    # install does not, and a hidden UAC prompt is what made the first attempt do nothing.
+    $arguments = @{ FilePath = $Uninstaller; ArgumentList = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'); Wait = $true; PassThru = $true }
+    if (__ELEVATE__) { $arguments['Verb'] = 'RunAs' }
+    $Uninstall = Start-Process @arguments
+    if ($Uninstall.ExitCode -ne 0) { throw ('The Windows uninstaller returned exit code ' + $Uninstall.ExitCode + '. Your data was left untouched.') }
+    # The Inno Setup uninstaller finishes in a temporary copy of itself after this process
+    # returns, so wait until it has really removed itself before deleting anything else.
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Test-Path -LiteralPath $Uninstaller) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 300 }
+    if (Test-Path -LiteralPath $Uninstaller) { throw 'The Windows uninstaller did not finish. Your data was left untouched.' }
+    Write-Log 'Native uninstaller finished'"#;
+
+#[cfg(windows)]
 fn spawn_windows_uninstall_helper(
     pid: u32,
     uninstaller: Option<PathBuf>,
+    elevate: bool,
     remove_app_files: Vec<PathBuf>,
     cleanup: UninstallCleanup,
 ) -> Result<(), String> {
     let script_path = std::env::temp_dir().join(format!("musicerer-uninstall-{}.ps1", pid));
-    let mut script = format!(
-        "$ErrorActionPreference = 'Stop'\n$TargetPid = {pid}\n$ScriptPath = $PSCommandPath\ntry {{\nwhile (Get-Process -Id $TargetPid -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }}\n"
-    );
-    if let Some(uninstaller) = uninstaller {
-        script.push_str(&format!(
-            "$Uninstaller = {}\nif (-not (Test-Path -LiteralPath $Uninstaller)) {{ throw 'The native uninstaller is missing.' }}\n$Uninstall = Start-Process -FilePath $Uninstaller -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Verb RunAs -Wait -PassThru\nif ($Uninstall.ExitCode -ne 0) {{ throw ('The native uninstaller returned exit code ' + $Uninstall.ExitCode) }}\n",
-            ps_quote(&uninstaller.to_string_lossy())
-        ));
-    }
-    for path in remove_app_files.iter().chain(cleanup.remove_paths.iter()) {
-        let quoted = ps_quote(&path.to_string_lossy());
-        script.push_str(&format!(
-            "if (Test-Path -LiteralPath {quoted}) {{ Remove-Item -LiteralPath {quoted} -Recurse -Force -ErrorAction Stop }}\n"
-        ));
-    }
-    for dir in cleanup.prune_dirs.iter() {
-        let quoted = ps_quote(&dir.to_string_lossy());
-        script.push_str(&format!(
-            "if ((Test-Path -LiteralPath {quoted} -PathType Container) -and -not (Get-ChildItem -LiteralPath {quoted} -Force | Select-Object -First 1)) {{ Remove-Item -LiteralPath {quoted} -Force }}\n"
-        ));
-    }
-    script.push_str(
-        "} catch {\n$message = $_.Exception.Message\ntry { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show($message, 'Musicerer uninstall failed', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null } catch {}\n} finally { Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue }\n",
-    );
-    fs::write(&script_path, script.as_bytes())
-        .map_err(|e| format!("Could not create the uninstall helper: {e}"))?;
+    let uninstall_step = uninstaller
+        .map(|path| {
+            WINDOWS_RUN_UNINSTALLER
+                .replace("__PATH__", &ps_quote(&path.to_string_lossy()))
+                .replace("__ELEVATE__", if elevate { "$true" } else { "$false" })
+        })
+        .unwrap_or_default();
+    // One failed removal must not stop the rest, so every path is handled on its own.
+    let removals = remove_app_files
+        .iter()
+        .chain(cleanup.remove_paths.iter())
+        .map(|path| format!("    Remove-Path {}", ps_quote(&path.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Children come before their parents because the list is sorted.
+    let prunes = cleanup
+        .prune_dirs
+        .iter()
+        .rev()
+        .map(|dir| format!("    Remove-IfEmpty {}", ps_quote(&dir.to_string_lossy())))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let script = WINDOWS_UNINSTALL_SCRIPT
+        .replace("__PID__", &pid.to_string())
+        .replace("__UNINSTALLER__", &uninstall_step)
+        .replace("__REMOVALS__", &removals)
+        .replace("__PRUNES__", &prunes);
+    // Windows PowerShell 5 reads a BOM-less file as ANSI, which would corrupt non-ASCII paths.
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(script.as_bytes());
+    fs::write(&script_path, bytes).map_err(|e| format!("Could not create the uninstall helper: {e}"))?;
     match hidden_command("powershell.exe")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(&script_path)
@@ -608,7 +676,7 @@ fn spawn_linux_uninstall_helper(
         command.arg(path);
     }
     command.arg("--PRUNE--");
-    for path in &cleanup.prune_dirs {
+    for path in cleanup.prune_dirs.iter().rev() {
         command.arg(path);
     }
     command.stdin(std::process::Stdio::null())

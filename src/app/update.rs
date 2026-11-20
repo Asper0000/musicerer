@@ -333,7 +333,11 @@ impl App {
             Message::PollWorker => {self.tick = self.tick.wrapping_add(1);
                 self.updater_seen = updater::generation(&self.updater);
                 if updater::take_exit_request(&self.updater) {
-                    self.save_config();
+                    // An uninstall already saved the settings it keeps. Saving again
+                    // here would recreate the config folder it is about to delete.
+                    if !updater::is_uninstalling(&self.updater) {
+                        self.save_config();
+                    }
                     return iced::exit();
                 }
                 if let Some(error) = updater::take_uninstall_error(&self.updater) {

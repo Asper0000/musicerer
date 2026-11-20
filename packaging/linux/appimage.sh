@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/linux/appimage/Musicerer-<version>-<arch>.AppImage from the staged payload. Sourced by build.sh.
+# Builds dist/linux/appimage/Musicerer-v<version>-linux-<arch>.AppImage from the staged payload. Sourced by build.sh.
 
 # Downloads and caches appimagetool as a build-time dependency; it is not shipped with Musicerer.
 get_appimagetool() {
@@ -17,7 +17,7 @@ get_appimagetool() {
 
 package_appimage() {
     local out_dir="$DIST_LINUX/appimage"
-    local out="$out_dir/$APP_NAME-$VERSION-$RPM_ARCH.AppImage"
+    local out="$out_dir/$(artifact_name AppImage)"
     local appdir="$WORK/AppDir"
 
     step "Packaging AppImage"

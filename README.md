@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="#"><img src="https://img.shields.io/badge/Version-0.3.0-6f42c1" alt="Version 0.3.0"></a>
+  <a href="#"><img src="https://img.shields.io/badge/Version-0.3.1-6f42c1" alt="Version 0.3.1"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.95%2B-orange?logo=rust&logoColor=white" alt="Rust"></a>
   <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%2010%2F11%20%7C%20Linux-0078D6?logo=windows&logoColor=white" alt="Platform"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License"></a>
@@ -119,12 +119,12 @@ build.bat both
 
 | Target | Result |
 |---|---|
-| `portable` | Builds `dist\portable\musicerer.exe` |
+| `portable` | Builds `dist\portable\Musicerer-v<version>-windows-x64-portable.exe` |
 | `setup` | Builds the portable executable, then creates the Windows installer |
 | `both` | Builds the portable executable and Windows installer |
 | *(no target)* | Same as `both` |
 
-The setup executable is written to `dist\installer\Musicerer_Setup_v<version>.exe`. The version is read from `Cargo.toml`. The installer contains Musicerer itself; runtime media tools are installed separately by the application.
+The setup executable is written to `dist\installer\Musicerer-v<version>-windows-x64-setup.exe`. The version is read from `Cargo.toml`. The installer contains Musicerer itself; runtime media tools are installed separately by the application.
 
 ### Linux
 

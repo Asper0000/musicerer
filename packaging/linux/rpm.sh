@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds dist/linux/rpm/musicerer-<version>-1.<arch>.rpm from the staged payload. Sourced by build.sh.
+# Builds dist/linux/rpm/Musicerer-v<version>-linux-<arch>.rpm from the staged payload. Sourced by build.sh.
 
 package_rpm() {
     need rpmbuild "Install it with: sudo apt install rpm   (Fedora: sudo dnf install rpm-build)"
@@ -8,7 +8,7 @@ package_rpm() {
     export STAGE="$WORK/rpm-stage"
 
     step "Packaging .rpm"
-    mkdir -p "$out_dir" "$top"/{BUILD,RPMS,SPECS,SRPMS} && rm -f "$out_dir/$APP_ID-$VERSION-"*.rpm
+    mkdir -p "$out_dir" "$top"/{BUILD,RPMS,SPECS,SRPMS} && rm -f "$out_dir/$(artifact_name rpm)"
     stage_payload "$STAGE"
     render "$PKG_DIR/templates/rpm.spec.in" "$top/SPECS/$APP_ID.spec"
 
@@ -20,6 +20,6 @@ package_rpm() {
 
     local built; built="$(find "$top/RPMS" -name '*.rpm' | head -n1)"
     [[ -n "$built" ]] || die "rpmbuild produced no package."
-    cp "$built" "$out_dir/"
-    ok "$out_dir/$(basename "$built")  ($(human_size "$built"))"
+    cp "$built" "$out_dir/$(artifact_name rpm)"
+    ok "$out_dir/$(artifact_name rpm)  ($(human_size "$built"))"
 }

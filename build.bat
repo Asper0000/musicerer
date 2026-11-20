@@ -3,8 +3,8 @@ setlocal EnableExtensions EnableDelayedExpansion
 cd /d "%~dp0"
 
 rem Musicerer build targets:
-rem   portable  -> dist\portable\musicerer.exe
-rem   setup     -> dist\installer\Musicerer_Setup_v<version>.exe
+rem   portable  -> dist\portable\Musicerer-v<version>-windows-x64-portable.exe
+rem   setup     -> dist\installer\Musicerer-v<version>-windows-x64-setup.exe
 rem   both      -> portable + setup (default)
 rem   Linux: appimage, deb, rpm, linux; all = both + Linux packages
 
@@ -60,6 +60,14 @@ if "%DO_APPIMAGE%"=="1" set "LINUX_ARGS=!LINUX_ARGS! appimage"
 if "%DO_DEB%"=="1"      set "LINUX_ARGS=!LINUX_ARGS! deb"
 if "%DO_RPM%"=="1"      set "LINUX_ARGS=!LINUX_ARGS! rpm"
 
+set "APP_VERSION="
+for /f "tokens=3" %%V in ('findstr /b /c:"version =" "%~dp0Cargo.toml"') do if not defined APP_VERSION set "APP_VERSION=%%~V"
+if not defined APP_VERSION (
+    echo Could not read version from Cargo.toml.
+    exit /b 1
+)
+set "PORTABLE_NAME=Musicerer-v!APP_VERSION!-windows-x64-portable.exe"
+
 rem A setup build always builds the portable executable first.
 if "%DO_SETUP%"=="1" set "DO_PORTABLE=1"
 
@@ -72,7 +80,7 @@ if "%DO_PORTABLE%"=="1" (
     cargo build --release --target-dir "target\portable"
     if errorlevel 1 exit /b 1
     if not exist "dist\portable" mkdir "dist\portable"
-    copy /Y "target\portable\release\musicerer.exe" "dist\portable\musicerer.exe" >nul
+    copy /Y "target\portable\release\musicerer.exe" "dist\portable\!PORTABLE_NAME!" >nul
     if errorlevel 1 ( echo Could not copy the portable executable. & exit /b 1 )
 )
 
@@ -96,17 +104,17 @@ if errorlevel 1 ( echo Linux build failed. & exit /b 1 )
 :linux_done
 echo.
 echo Done.
-if "%DO_PORTABLE%"=="1" echo   dist\portable\musicerer.exe
-if "%DO_SETUP%"=="1"    echo   dist\installer\Musicerer_Setup_v!APP_VERSION!.exe
-if "%DO_APPIMAGE%"=="1" echo   dist\linux\appimage\
-if "%DO_DEB%"=="1"      echo   dist\linux\deb\
-if "%DO_RPM%"=="1"      echo   dist\linux\rpm\
+if "%DO_PORTABLE%"=="1" echo   dist\portable\!PORTABLE_NAME!
+if "%DO_SETUP%"=="1"    echo   dist\installer\Musicerer-v!APP_VERSION!-windows-x64-setup.exe
+if "%DO_APPIMAGE%"=="1" echo   dist\linux\appimage\Musicerer-v!APP_VERSION!-linux-x64.AppImage
+if "%DO_DEB%"=="1"      echo   dist\linux\deb\Musicerer-v!APP_VERSION!-linux-x64.deb
+if "%DO_RPM%"=="1"      echo   dist\linux\rpm\Musicerer-v!APP_VERSION!-linux-x64.rpm
 endlocal
 goto :eof
 
 :build_setup
-if not exist "%~dp0scripts\musicercer_portable_setup.iss" (
-    echo Installer script is missing: scripts\musicercer_portable_setup.iss
+if not exist "%~dp0scripts\musicerer_setup.iss" (
+    echo Installer script is missing: scripts\musicerer_setup.iss
     exit /b 1
 )
 
@@ -128,17 +136,10 @@ if not exist "!ISCC_EXE!" (
     exit /b 1
 )
 
-set "APP_VERSION="
-for /f "tokens=3" %%V in ('findstr /b /c:"version =" "%~dp0Cargo.toml"') do set "APP_VERSION=%%~V"
-if not defined APP_VERSION (
-    echo Could not read version from Cargo.toml.
-    exit /b 1
-)
-
 if not exist "%~dp0dist\installer" mkdir "%~dp0dist\installer"
 echo Using Inno Setup: !ISCC_EXE!
 echo Building version: !APP_VERSION!
-"!ISCC_EXE!" "/DMyAppVersion=!APP_VERSION!" "%~dp0scripts\musicercer_portable_setup.iss"
+"!ISCC_EXE!" "/DMyAppVersion=!APP_VERSION!" "%~dp0scripts\musicerer_setup.iss"
 if errorlevel 1 (
     echo Inno Setup compilation failed.
     exit /b 1

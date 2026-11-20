@@ -161,16 +161,20 @@ impl App {
             Status::Failed(error) => error.clone(),
             Status::Unsupported(message) => message.clone(),
             Status::UpToDate => "Up to date".to_string(),
+            Status::Available if self.confirm_app_update => {
+                "Confirm to restart and update".to_string()
+            }
             Status::Available => "Update available".to_string(),
         };
         let status_color = match &r.status {
-            Status::Available | Status::Failed(_) => Some(t::danger()),
+            Status::Failed(_) => Some(t::danger()),
+            Status::Available => Some(t::warning()),
             Status::UpToDate => Some(t::success()),
             _ => None,
         };
         let version_widget = text(version).size(12);
         let version_widget = if r.status == Status::Available {
-            version_widget.style(|_| iced::widget::text::Style { color: Some(t::danger()) })
+            version_widget.style(|_| iced::widget::text::Style { color: Some(t::warning()) })
         } else if r.status == Status::UpToDate {
             version_widget.style(|_| iced::widget::text::Style { color: Some(t::success()) })
         } else {
@@ -198,17 +202,9 @@ impl App {
             info = info.push(text(self.installation_info.uninstall_note.clone()).size(11).style(t::muted_text));
         }
 
-        let actions_width = if self.confirm_app_update
-            || self.confirm_app_reinstall
-            || r.status == Status::Available
-        {
-            142.0
-        } else {
-            36.0
-        };
         let mut actions = Column::new()
             .spacing(5)
-            .width(Length::Fixed(actions_width))
+            .width(Length::Fixed(36.0))
             .align_x(Alignment::End);
         if self.confirm_app_update {
             actions = actions
@@ -219,13 +215,13 @@ impl App {
                     true,
                     false,
                 ))
-                .push(
-                    button(text("Restart & update").size(12))
-                        .on_press_maybe((!busy && !queue_busy).then_some(Message::InstallUpdate(Component::App)))
-                        .style(t::primary_button)
-                        .padding([7, 10])
-                        .width(Length::Fill),
-                );
+                .push(square_action_button(
+                    ICON_ACTION_CONFIRM,
+                    "Restart & update",
+                    Message::InstallUpdate(Component::App),
+                    !busy && !queue_busy,
+                    true,
+                ));
         } else if self.confirm_app_reinstall {
             actions = actions
                 .push(square_action_button(
@@ -243,13 +239,13 @@ impl App {
                     true,
                 ));
         } else if r.status == Status::Available {
-            actions = actions.push(
-                button(text("Update").size(12))
-                    .on_press_maybe((!busy && !queue_busy).then_some(Message::AskAppUpdate))
-                    .style(t::primary_button)
-                    .padding([7, 10])
-                    .width(Length::Fill),
-            );
+            actions = actions.push(square_action_button(
+                ICON_ACTION_INSTALL,
+                "Update",
+                Message::AskAppUpdate,
+                !busy && !queue_busy,
+                true,
+            ));
         }
 
         if !self.confirm_app_update
@@ -319,7 +315,8 @@ impl App {
         let version_widget = text(version).size(12);
         let version_widget = match &r.status {
             Status::UpToDate => version_widget.style(|_| iced::widget::text::Style { color: Some(t::success()) }),
-            Status::Available | Status::Failed(_) => version_widget.style(|_| iced::widget::text::Style { color: Some(t::danger()) }),
+            Status::Available => version_widget.style(|_| iced::widget::text::Style { color: Some(t::warning()) }),
+            Status::Failed(_) => version_widget.style(|_| iced::widget::text::Style { color: Some(t::danger()) }),
             _ => version_widget.style(t::muted_text),
         };
         let status_widget = text(status_text).size(11);
@@ -339,10 +336,9 @@ impl App {
         }
 
         let can_manage = !busy && !queue_busy;
-        let actions_width = if r.status == Status::Available && r.managed && !r.external && !r.missing { 142.0 } else { 36.0 };
         let mut actions = Column::new()
             .spacing(5)
-            .width(Length::Fixed(actions_width))
+            .width(Length::Fixed(36.0))
             .align_x(Alignment::End);
         if r.missing || r.external || !r.managed {
             let label = if r.missing { "Install" } else { "Install managed copy" };
@@ -354,12 +350,13 @@ impl App {
                 true,
             ));
         } else if r.status == Status::Available {
-            actions = actions.push(
-                button(text("Update").size(12).width(Length::Fill).align_x(Alignment::Center))
-                    .on_press_maybe((can_manage && r.can_update()).then_some(Message::InstallUpdate(comp)))
-                    .style(t::primary_button)
-                    .padding([7, 10]),
-            );
+            actions = actions.push(square_action_button(
+                ICON_ACTION_INSTALL,
+                "Update",
+                Message::InstallUpdate(comp),
+                can_manage && r.can_update(),
+                true,
+            ));
         }
         if r.managed {
             if !r.missing && !r.external {

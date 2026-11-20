@@ -109,7 +109,7 @@ struct Plan {
 
 #[derive(Debug, Clone)]
 pub struct Row {
-    /// Display text, e.g. "v0.3.0" or "2025.10.22".
+    /// Display text, e.g. "v0.3.1" or "2025.10.22".
     pub installed: Option<String>,
     pub latest: Option<String>,
     pub status: Status,
@@ -229,6 +229,11 @@ pub fn can_install_external(h: &Handle) -> bool {
 }
 
 /// True once, when the app finished updating itself and should close.
+/// True once an uninstall has been started and the app is about to exit.
+pub fn is_uninstalling(h: &Handle) -> bool {
+    lock(h).uninstalling
+}
+
 pub fn take_exit_request(h: &Handle) -> bool {
     std::mem::take(&mut lock(h).exit_requested)
 }
@@ -651,7 +656,7 @@ fn check_ffmpeg() -> Result<Checked, String> {
     let plan = plan_for(release, &asset, asset.name.clone())?;
     let installed_stable = raw.as_deref().and_then(ffmpeg_stable_version);
     let (available, note) = match installed_stable {
-        Some((installed_numbers, installed_build)) => {
+        Some((ref installed_numbers, installed_build)) => {
             match compare_version_parts(&latest_numbers, &installed_numbers) {
                 std::cmp::Ordering::Greater => (true, String::new()),
                 std::cmp::Ordering::Less => (
@@ -679,6 +684,20 @@ fn check_ffmpeg() -> Result<Checked, String> {
             true,
             "Could not compare the installed build with the stable release; installing will replace it.".to_string(),
         ),
+    };
+
+    // A newer BtbN build of the same FFmpeg version would otherwise read as
+    // "9.0.2 -> 9.0.2". Show the build counter so the difference is visible.
+    let (installed, latest_label) = match &installed_stable {
+        Some((numbers, Some(build)))
+            if available && compare_version_parts(&latest_numbers, numbers).is_eq() =>
+        {
+            (
+                installed.map(|label| format!("{label} (build {build})")),
+                format!("{latest_label} (build {latest_build})"),
+            )
+        }
+        _ => (installed, latest_label),
     };
 
     Ok(Checked {
