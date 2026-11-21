@@ -24,6 +24,11 @@ MAINTAINER="${MAINTAINER:-Musicerer <noreply@example.invalid>}"
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
 [[ -n "$VERSION" ]] || die "Could not read the version from Cargo.toml."
 
+# Keep release filenames portable: strip private-use icon glyphs, control bytes,
+# and any other non-filename characters that may have entered the version string.
+VERSION="$(printf '%s' "$VERSION" | LC_ALL=C tr -cd 'A-Za-z0-9._+-')"
+[[ -n "$VERSION" ]] || die "The Cargo.toml version contains no valid filename characters."
+
 case "$(uname -m)" in
     x86_64)        RPM_ARCH=x86_64;  DEB_ARCH=amd64; NAME_ARCH=x64 ;;
     aarch64|arm64) RPM_ARCH=aarch64; DEB_ARCH=arm64; NAME_ARCH=arm64 ;;

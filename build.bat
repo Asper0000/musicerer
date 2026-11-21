@@ -66,6 +66,8 @@ if not defined APP_VERSION (
     echo Could not read version from Cargo.toml.
     exit /b 1
 )
+rem Keep the printed Linux package names in sync with the sanitized WSL names.
+for /f "delims=" %%V in ('powershell.exe -NoProfile -Command "[regex]::Replace($env:APP_VERSION, '[^A-Za-z0-9._+-]', '')"') do set "APP_VERSION=%%V"
 set "PORTABLE_NAME=Musicerer-v!APP_VERSION!-windows-x64-portable.exe"
 
 rem A setup build always builds the portable executable first.

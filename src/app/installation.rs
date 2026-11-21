@@ -130,7 +130,7 @@ fn tool_size_description(r: &updater::Row) -> Option<String> {
             // example, a yt-dlp PATH launcher whose owning Python environment
             // cannot be identified), still show the known size of the separate
             // Musicerer-managed copy that will be downloaded.
-            (None, Some(managed_target)) => Some(format!("+ {}", format_size(managed_target))),
+            (None, Some(managed_target)) => Some(format!("? MB + {}", format_size(managed_target))),
             (Some(current), None) => Some(format_size(current)),
             (None, None) => None,
         };
@@ -154,7 +154,7 @@ fn tool_size_description(r: &updater::Row) -> Option<String> {
                     format_size(current)
                 });
             }
-            return Some(format!("+ {}", format_size(target)));
+            return Some(format!("? MB + {}", format_size(target)));
         }
     }
 

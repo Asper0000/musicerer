@@ -2161,7 +2161,6 @@ fn install_app(h: &Handle, plan: &Plan) -> Result<(), String> {
                 r.note = "Restarting to finish the update\u{2026}".to_string();
             });
             launch_setup(&setup, &exe)?;
-            thread::sleep(Duration::from_millis(400));
             request_exit(h);
             Ok(())
         }
@@ -2251,19 +2250,123 @@ fn install_app(h: &Handle, plan: &Plan) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+const WINDOWS_APP_UPDATE_SCRIPT: &str = r#"$ErrorActionPreference = 'Stop'
+$ParentPid = __PARENT_PID__
+$SetupPath = __SETUP_PATH__
+$AppPath = __APP_PATH__
+$InstallDir = __INSTALL_DIR__
+$LogPath = __LOG_PATH__
+$ScriptPath = $MyInvocation.MyCommand.Path
+
+function Show-UpdateError([string]$Message) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.MessageBox]::Show(
+            $Message,
+            'Musicerer update failed',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
+    } catch {
+        Write-Output $Message
+    }
+}
+
+try {
+    $LogDirectory = Split-Path -Parent $LogPath
+    New-Item -ItemType Directory -Force -Path $LogDirectory | Out-Null
+
+    # The application must be completely gone before Inno Setup replaces its EXE.
+    # Starting Setup immediately and relying on Restart Manager raced the app's
+    # shutdown and could cause Setup to roll the installation back.
+    $Deadline = (Get-Date).AddSeconds(60)
+    while (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
+        if ((Get-Date) -ge $Deadline) {
+            throw 'Musicerer did not finish closing. The installer was not started.'
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    Start-Sleep -Milliseconds 500
+
+    if (-not (Test-Path -LiteralPath $SetupPath -PathType Leaf)) {
+        throw ('The downloaded installer was not found: ' + $SetupPath)
+    }
+
+    # Pin the destination to the directory of the running installation. This
+    # avoids updating a different copy when Windows has stale install metadata.
+    # Inno Setup logging is retained so a failed update can be diagnosed.
+    $Arguments = '/SILENT /SUPPRESSMSGBOXES /NORESTART /NORESTARTAPPLICATIONS ' +
+        '/LOGCLOSEAPPLICATIONS /DIR="' + $InstallDir + '" /LOG="' + $LogPath + '"'
+    $Installer = Start-Process -FilePath $SetupPath -ArgumentList $Arguments -Wait -PassThru
+
+    if ($Installer.ExitCode -ne 0) {
+        $LogTail = ''
+        if (Test-Path -LiteralPath $LogPath) {
+            $LogTail = (Get-Content -LiteralPath $LogPath -Tail 24 -ErrorAction SilentlyContinue) -join "`r`n"
+        }
+        throw ("The installer exited with code " + $Installer.ExitCode + ".`r`nLog: " + $LogPath + "`r`n`r`n" + $LogTail)
+    }
+
+    if (-not (Test-Path -LiteralPath $AppPath -PathType Leaf)) {
+        throw ('Setup completed, but Musicerer was not found at: ' + $AppPath + "`r`nInstaller log: " + $LogPath)
+    }
+
+    # The installer is launched with /NORESTARTAPPLICATIONS, so this is the
+    # only restart and it happens after Setup has returned success.
+    Start-Process -FilePath $AppPath
+}
+catch {
+    Show-UpdateError ("Musicerer could not be updated or reinstalled.`r`n`r`n" + $_.Exception.Message)
+    # If Setup rolled back, the previous executable remains in place.
+    if (Test-Path -LiteralPath $AppPath -PathType Leaf) {
+        Start-Process -FilePath $AppPath
+    }
+}
+finally {
+    Start-Sleep -Milliseconds 500
+    Remove-Item -LiteralPath $ScriptPath -Force -ErrorAction SilentlyContinue
+}"#;
+
+#[cfg(windows)]
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(windows)]
 fn launch_setup(setup: &Path, exe: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    // Run the installer silently, then start the app again once it finishes.
-    let mut cmd = std::process::Command::new("cmd");
-    cmd.creation_flags(0x0800_0000);
-    cmd.raw_arg(format!(
-        "/C \"\"{}\" /SILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS & start \"\" \"{}\"\"",
-        setup.display(),
-        exe.display()
-    ));
-    cmd.spawn()
-        .map(|_| ())
-        .map_err(|e| format!("Could not start the installer: {e}"))
+    let parent_pid = std::process::id();
+    let update_dir = app_update_cache_dir()?;
+    let script_path = update_dir.join(format!("run-setup-{parent_pid}.ps1"));
+    let log_path = update_dir.join(format!("installer-{parent_pid}.log"));
+    let install_dir = exe
+        .parent()
+        .ok_or_else(|| "Could not determine the Musicerer installation directory".to_string())?;
+
+    let script = WINDOWS_APP_UPDATE_SCRIPT
+        .replace("__PARENT_PID__", &parent_pid.to_string())
+        .replace("__SETUP_PATH__", &powershell_single_quote(&setup.to_string_lossy()))
+        .replace("__APP_PATH__", &powershell_single_quote(&exe.to_string_lossy()))
+        .replace("__INSTALL_DIR__", &powershell_single_quote(&install_dir.to_string_lossy()))
+        .replace("__LOG_PATH__", &powershell_single_quote(&log_path.to_string_lossy()));
+
+    // Windows PowerShell 5 reads a BOM-less script as ANSI, which can corrupt
+    // non-ASCII characters in a user's installation path.
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(script.as_bytes());
+    fs::write(&script_path, bytes)
+        .map_err(|e| format!("Could not create the installer helper: {e}"))?;
+
+    match hidden_command("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script_path)
+        .spawn()
+    {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(script_path);
+            Err(format!("Could not start the installer helper: {e}"))
+        }
+    }
 }
 
 #[cfg(not(windows))]
