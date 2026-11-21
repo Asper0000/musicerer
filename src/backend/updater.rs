@@ -105,6 +105,11 @@ struct Plan {
     sha256: String,
     /// Identifies the build; stored after install so rolling releases can be compared.
     id: String,
+    /// Exact expected size of the installed executable file(s), when known.
+    installed_size: Option<u64>,
+    /// Size of the downloaded release asset. This is not necessarily the
+    /// installed size because archives expand during extraction.
+    download_size: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +117,10 @@ pub struct Row {
     /// Display text, e.g. "v0.3.1" or "2025.10.22".
     pub installed: Option<String>,
     pub latest: Option<String>,
+    /// Whether the checked release is actually newer than the active install.
+    /// Kept across download progress updates so an install of a separate
+    /// managed copy does not turn an up-to-date PATH copy into an "update".
+    pub update_available: bool,
     pub status: Status,
     /// Extra line describing installation origin or an incomplete tool pair.
     pub note: String,
@@ -123,6 +132,15 @@ pub struct Row {
     pub origin: String,
     /// A required executable is absent (including either member of the FFmpeg pair).
     pub missing: bool,
+    /// Installed footprint of the resolved tool files. Windows FFmpeg also
+    /// includes DLL dependencies beside PATH/local executables.
+    pub installed_size: Option<u64>,
+    /// Exact size of any existing Musicerer-managed executable file(s).
+    pub managed_size: Option<u64>,
+    /// Exact expected size after installing the selected release, when known.
+    pub latest_size: Option<u64>,
+    /// Download size for the selected release asset.
+    pub latest_download_size: Option<u64>,
     plan: Option<Plan>,
 }
 
@@ -131,12 +149,17 @@ impl Row {
         Self {
             installed: None,
             latest: None,
+            update_available: false,
             status: Status::Unchecked,
             note: String::new(),
             external: false,
             managed: false,
             origin: "Not installed".to_string(),
             missing: false,
+            installed_size: None,
+            managed_size: None,
+            latest_size: None,
+            latest_download_size: None,
             plan: None,
         }
     }
@@ -311,17 +334,30 @@ fn check_one(h: &Handle, comp: Component, startup: bool) {
     let managed = component_is_managed(comp);
     let origin = component_origin(comp);
     let tool_note = component_note(comp, external);
+    let installed_size = component_installed_size(comp);
+    let managed_size = component_managed_size(comp);
     match result {
         Ok(c) => {
             let available = matches!(c.verdict, Verdict::Available(_));
             let missing = component_is_missing(comp);
+            let (latest_size, latest_download_size) = match &c.verdict {
+                Verdict::UpToDate(Some(plan)) | Verdict::Available(plan) => {
+                    (plan.installed_size, plan.download_size)
+                }
+                _ => (None, None),
+            };
             update_row(h, comp, move |r| {
                 r.installed = c.installed;
                 r.latest = c.latest;
+                r.update_available = available;
                 r.external = external;
                 r.managed = managed;
                 r.origin = origin;
                 r.missing = missing;
+                r.installed_size = installed_size;
+                r.managed_size = managed_size;
+                r.latest_size = latest_size;
+                r.latest_download_size = latest_download_size;
                 r.note = if tool_note.is_empty() { c.note } else if c.note.is_empty() { tool_note } else {
                     format!("{} {}", c.note, tool_note)
                 };
@@ -355,6 +391,11 @@ fn check_one(h: &Handle, comp: Component, startup: bool) {
                 r.managed = managed;
                 r.origin = origin;
                 r.missing = missing;
+                r.installed_size = installed_size;
+                r.managed_size = managed_size;
+                r.latest_size = None;
+                r.latest_download_size = None;
+                r.update_available = false;
                 r.note = tool_note;
                 r.status = Status::Failed(format!("Couldn't check for updates: {e}"));
                 r.plan = None;
@@ -371,17 +412,388 @@ fn mark_installed(h: &Handle, comp: Component, plan: &Plan) {
     let origin = component_origin(comp);
     let missing = component_is_missing(comp);
     let note = component_note(comp, external);
+    let installed_size = component_installed_size(comp);
+    let managed_size = component_managed_size(comp);
     update_row(h, comp, move |row| {
         row.installed = installed;
         row.latest = Some(plan.id.clone());
+        row.update_available = false;
         row.external = external;
         row.managed = managed;
         row.origin = origin;
         row.missing = missing;
+        row.installed_size = installed_size;
+        row.managed_size = managed_size;
+        row.latest_size = plan.installed_size;
+        row.latest_download_size = plan.download_size;
         row.note = note;
         row.status = Status::UpToDate;
         row.plan = Some(plan.clone());
     });
+}
+
+fn file_size(path: Option<PathBuf>) -> Option<u64> {
+    path.and_then(|path| fs::metadata(path).ok().map(|metadata| metadata.len()))
+}
+
+fn sum_file_sizes(paths: impl IntoIterator<Item = Option<PathBuf>>) -> Option<u64> {
+    let sizes: Vec<u64> = paths.into_iter().filter_map(file_size).collect();
+    (!sizes.is_empty()).then(|| sizes.into_iter().sum())
+}
+
+fn component_installed_size(comp: Component) -> Option<u64> {
+    match comp {
+        Component::App => None,
+        Component::YtDlp => ytdlp_installation_size(),
+        Component::Deno => file_size(tools::find(Tool::Deno).map(|path| resolve_tool_path(&path))),
+        Component::Ffmpeg => ffmpeg_installation_size(),
+    }
+}
+
+/// Measures yt-dlp's installed footprint.
+///
+/// A standalone yt-dlp executable is the complete program and should be
+/// measured directly. Do not replace its real size with the size of an
+/// unrelated Python package just because some Python environment happens to
+/// contain the same yt-dlp version.
+///
+/// A pip-installed Windows command is usually a small distlib launcher. Only
+/// for those small launchers do we inspect the Python environment that owns
+/// the launcher and measure the installed distribution there.
+fn ytdlp_installation_size() -> Option<u64> {
+    let executable = tools::find(Tool::YtDlp).map(|path| resolve_tool_path(&path))?;
+    let executable_size = file_size(Some(executable.clone())).unwrap_or(0);
+
+    #[cfg(windows)]
+    {
+        const PYTHON_LAUNCHER_LIMIT: u64 = 4 * 1024 * 1024;
+
+        // Official standalone yt-dlp.exe builds are much larger than a pip
+        // launcher (typically tens of MB). If this is already a substantial
+        // executable, its file size is the correct installation size. This
+        // also prevents an unrelated Python environment with the same version
+        // from overriding the actual binary size.
+        if executable_size >= PYTHON_LAUNCHER_LIMIT {
+            return Some(executable_size);
+        }
+
+        let expected_version = ytdlp_version();
+        for interpreter in python_interpreters_for_tool(&executable) {
+            if let Some((version, distribution_size, includes_executable)) =
+                python_ytdlp_distribution_size(&interpreter, &executable)
+            {
+                if expected_version
+                    .as_deref()
+                    .is_some_and(|expected| versions_equivalent(expected, &version))
+                {
+                    let total = if includes_executable {
+                        distribution_size
+                    } else {
+                        distribution_size.saturating_add(executable_size)
+                    };
+                    if total > executable_size {
+                        return Some(total);
+                    }
+                }
+            }
+        }
+
+        // A tiny Windows launcher is not the full installation. Returning its
+        // file size would produce misleading values such as ~100 KB. If its
+        // owning Python environment cannot be identified, report no size.
+        return None;
+    }
+
+    #[cfg(not(windows))]
+    (executable_size > 0).then_some(executable_size)
+}
+
+#[cfg(windows)]
+fn python_interpreters_for_tool(tool_executable: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    let parent = tool_executable.parent();
+
+    // pip's Windows launcher can ship a sibling *-script.py file whose
+    // shebang points directly to the Python environment that owns yt-dlp.
+    if let Some(parent) = parent {
+        for name in ["yt-dlp-script.py", "yt_dlp-script.py"] {
+            if let Ok(contents) = fs::read_to_string(parent.join(name)) {
+                if let Some(first_line) = contents.lines().next() {
+                    if let Some(interpreter) = first_line.strip_prefix("#!") {
+                        let candidate = PathBuf::from(interpreter.trim().trim_matches('\"'));
+                        if candidate.is_file() && !candidates.contains(&candidate) {
+                            candidates.push(candidate);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut directory = parent;
+    // pip/venv launchers normally live in <environment>\Scripts. Check the
+    // tool's ancestors first so we use the Python environment that owns it.
+    for _ in 0..5 {
+        let Some(current) = directory else { break };
+        for name in ["python.exe", "python3.exe"] {
+            let candidate = current.join(name);
+            if candidate.is_file() && !candidates.contains(&candidate) {
+                candidates.push(candidate);
+                if candidates.len() >= 6 {
+                    return candidates;
+                }
+            }
+        }
+        directory = current.parent();
+    }
+
+    // Do not scan every Python interpreter on PATH here. A matching version
+    // alone does not prove that the interpreter owns this launcher; selecting
+    // an unrelated environment can undercount or misattribute the install.
+    // Pip, venv and pipx launchers are handled by the adjacent script shebang
+    // and ancestor-environment checks above.
+    candidates
+}
+
+#[cfg(windows)]
+fn python_ytdlp_distribution_size(
+    interpreter: &Path,
+    tool_executable: &Path,
+) -> Option<(String, u64, bool)> {
+    const SCRIPT: &str = r#"
+import importlib.metadata as metadata
+from pathlib import Path
+import sys
+
+distribution = metadata.distribution('yt-dlp')
+executable = Path(sys.argv[1]).resolve()
+files = set()
+
+# RECORD is useful, but some environments have incomplete or unusual file
+# metadata. Always walk the actual import package and dist-info directory too.
+try:
+    import yt_dlp
+    roots = [Path(yt_dlp.__file__).resolve().parent, Path(distribution._path).resolve()]
+    for root in roots:
+        if root.is_dir():
+            files.update(path.resolve() for path in root.rglob('*') if path.is_file())
+except (ImportError, OSError):
+    pass
+
+for item in distribution.files or ():
+    try:
+        path = distribution.locate_file(item)
+        if path.is_file():
+            files.add(path.resolve())
+    except OSError:
+        pass
+
+size = 0
+for path in files:
+    try:
+        size += path.stat().st_size
+    except OSError:
+        pass
+print(distribution.version)
+print(size)
+print(1 if executable in files else 0)
+"#;
+
+    let mut command = hidden_command(interpreter);
+    command
+        .arg("-c")
+        .arg(SCRIPT)
+        .arg(tool_executable)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let output = output_with_timeout(&mut command, Duration::from_secs(5)).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines();
+    let version = lines.next()?.trim().to_string();
+    let size = lines.next()?.trim().parse::<u64>().ok()?;
+    let includes_executable = lines.next().is_some_and(|value| value.trim() == "1");
+    (size > 0).then_some((version, size, includes_executable))
+}
+
+#[cfg(windows)]
+fn versions_equivalent(left: &str, right: &str) -> bool {
+    left.trim_start_matches(['v', 'V'])
+        .eq_ignore_ascii_case(right.trim_start_matches(['v', 'V']))
+}
+
+/// Resolves common Windows package-manager shims to their real executable.
+/// Scoop stores the target in a sibling .shim file; Chocolatey ShimGen reports
+/// its target through --shimgen-help. Measuring the redirector itself can
+/// understate a large tool installation by hundreds of megabytes.
+fn resolve_tool_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(target) = scoop_shim_target(path) {
+            return target;
+        }
+
+        // ShimGen launchers are small; avoid probing ordinary, full-size tools.
+        let is_small_executable = path.extension().is_some_and(|extension| {
+            extension.to_string_lossy().eq_ignore_ascii_case("exe")
+        }) && fs::metadata(path).is_ok_and(|metadata| metadata.len() < 4 * 1024 * 1024);
+        if is_small_executable {
+            if let Some(target) = chocolatey_shim_target(path) {
+                return target;
+            }
+        }
+    }
+
+    path.to_path_buf()
+}
+
+#[cfg(windows)]
+fn scoop_shim_target(shim_exe: &Path) -> Option<PathBuf> {
+    let mut shim_file = shim_exe.to_path_buf();
+    shim_file.set_extension("shim");
+    let contents = fs::read_to_string(shim_file).ok()?;
+    for line in contents.trim_start_matches('\u{feff}').lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') || line.starts_with("//") {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { continue };
+        if !key.trim().eq_ignore_ascii_case("path") {
+            continue;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .or_else(|| value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
+            .unwrap_or(value);
+        let value = expand_percent_environment_variables(value);
+        let target = PathBuf::from(value);
+        let target = if target.is_absolute() {
+            target
+        } else {
+            shim_exe.parent()?.join(target)
+        };
+        return target.is_file().then_some(target);
+    }
+    None
+}
+
+#[cfg(windows)]
+fn expand_percent_environment_variables(value: &str) -> String {
+    let mut expanded = String::new();
+    let mut remaining = value;
+    while let Some(start) = remaining.find('%') {
+        expanded.push_str(&remaining[..start]);
+        let after_start = &remaining[start + 1..];
+        let Some(end) = after_start.find('%') else {
+            expanded.push_str(&remaining[start..]);
+            return expanded;
+        };
+        let name = &after_start[..end];
+        if let Ok(replacement) = std::env::var(name) {
+            expanded.push_str(&replacement);
+        } else {
+            expanded.push_str(&remaining[start..start + end + 2]);
+        }
+        remaining = &after_start[end + 1..];
+    }
+    expanded.push_str(remaining);
+    expanded
+}
+
+#[cfg(windows)]
+fn chocolatey_shim_target(shim_exe: &Path) -> Option<PathBuf> {
+    let mut command = hidden_command(shim_exe);
+    command.arg("--shimgen-help");
+    let output = output_with_timeout(&mut command, Duration::from_secs(2)).ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stdout.lines().chain(stderr.lines()) {
+        let Some((_, value)) = line.split_once("Target:") else { continue };
+        let value = value.trim().trim_matches(|character| character == '\'' || character == '"');
+        let target = PathBuf::from(value);
+        let target = if target.is_absolute() {
+            target
+        } else {
+            shim_exe.parent()?.join(target)
+        };
+        if target.is_file() {
+            return Some(target);
+        }
+    }
+    None
+}
+
+/// Measures the FFmpeg installation rather than only its two executable
+/// launch files. Windows distributions commonly keep required DLLs beside
+/// ffmpeg.exe and ffprobe.exe; omitting those makes PATH installs look tiny.
+/// Musicerer-managed copies are deliberately measured separately below,
+/// because Musicerer installs only the two standalone executables itself.
+fn ffmpeg_installation_size() -> Option<u64> {
+    let paths: Vec<PathBuf> = [tools::find(Tool::Ffmpeg), tools::find(Tool::Ffprobe)]
+        .into_iter()
+        .flatten()
+        .map(|path| resolve_tool_path(&path))
+        .filter(|path| path.is_file())
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+
+    if cfg!(windows) {
+        let mut directories: Vec<PathBuf> = Vec::new();
+        for path in &paths {
+            if let Some(parent) = path.parent() {
+                if !directories.iter().any(|dir| dir.as_path() == parent) {
+                    directories.push(parent.to_path_buf());
+                }
+            }
+        }
+
+        let mut total = 0u64;
+        let mut counted = false;
+        for directory in directories {
+            let Ok(entries) = fs::read_dir(directory) else { continue };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let is_resolved_executable = paths.iter().any(|resolved| resolved == &path);
+                let is_support_library = path
+                    .extension()
+                    .is_some_and(|extension| extension.to_string_lossy().eq_ignore_ascii_case("dll"));
+                if is_resolved_executable || is_support_library {
+                    if let Ok(metadata) = fs::metadata(&path) {
+                        total = total.saturating_add(metadata.len());
+                        counted = true;
+                    }
+                }
+            }
+        }
+        if counted {
+            return Some(total);
+        }
+    }
+
+    sum_file_sizes(paths.into_iter().map(Some))
+}
+
+fn component_managed_size(comp: Component) -> Option<u64> {
+    let dir = tools::managed_dir()?;
+    let paths = match comp {
+        Component::App => return None,
+        Component::YtDlp => vec![dir.join(Tool::YtDlp.file_name())],
+        Component::Deno => vec![dir.join(Tool::Deno.file_name())],
+        Component::Ffmpeg => vec![
+            dir.join(Tool::Ffmpeg.file_name()),
+            dir.join(Tool::Ffprobe.file_name()),
+        ],
+    };
+    sum_file_sizes(paths.into_iter().map(|path| path.is_file().then_some(path)))
 }
 
 fn component_is_external(comp: Component) -> bool {
@@ -513,8 +925,8 @@ fn check_app() -> Result<Checked, String> {
         });
     }
 
-    let suffixes = kind.asset_suffixes();
-    let asset = pick(&rel, |n| suffixes.iter().any(|suffix| n.ends_with(suffix)))?;
+    let suffix = kind.asset_suffix();
+    let asset = pick(&rel, |n| n.ends_with(suffix))?;
     let plan = plan_for(&rel, &asset, tag)?;
     if !is_newer(&latest_raw, APP_VERSION) {
         return Ok(Checked {
@@ -549,7 +961,10 @@ fn check_ytdlp() -> Result<Checked, String> {
         Plat::LinuxArm64 => "yt-dlp_linux_aarch64",
     };
     let asset = pick(&rel, |n| n == want)?;
-    let plan = plan_for(&rel, &asset, tag.clone())?;
+    let mut plan = plan_for(&rel, &asset, tag.clone())?;
+    // yt-dlp is published as the executable itself, so the release asset size
+    // is also the installed file size.
+    plan.installed_size = asset.size;
 
     let available = installed.as_deref().map(|v| is_newer(&tag, v)).unwrap_or(true);
     Ok(Checked {
@@ -582,7 +997,11 @@ fn check_deno() -> Result<Checked, String> {
         Plat::LinuxArm64 => "deno-aarch64-unknown-linux-gnu.zip",
     };
     let asset = pick(&rel, |n| n == want)?;
-    let plan = plan_for(&rel, &asset, tag.clone())?;
+    let mut plan = plan_for(&rel, &asset, tag.clone())?;
+    let deno_name = Tool::Deno.file_name();
+    if let Some(size) = zip_member_sizes(&asset.url, asset.size, &[deno_name]) {
+        plan.installed_size = Some(size);
+    }
 
     let available = raw.as_deref().map(|v| is_newer(&latest_raw, v)).unwrap_or(true);
     Ok(Checked {
@@ -653,7 +1072,13 @@ fn check_ffmpeg() -> Result<Checked, String> {
 
     // Keep the complete build-specific asset name as the marker. The UI only
     // displays the semantic FFmpeg version (for example, 9.0.2).
-    let plan = plan_for(release, &asset, asset.name.clone())?;
+    let mut plan = plan_for(release, &asset, asset.name.clone())?;
+    if matches!(plat, Plat::WinX64) {
+        let names = [Tool::Ffmpeg.file_name(), Tool::Ffprobe.file_name()];
+        if let Some(size) = zip_member_sizes(&asset.url, asset.size, &names) {
+            plan.installed_size = Some(size);
+        }
+    }
     let installed_stable = raw.as_deref().and_then(ffmpeg_stable_version);
     let (available, note) = match installed_stable {
         Some((ref installed_numbers, installed_build)) => {
@@ -851,6 +1276,7 @@ struct Asset {
     name: String,
     url: String,
     digest: Option<String>,
+    size: Option<u64>,
 }
 
 fn agent() -> ureq::Agent {
@@ -900,7 +1326,8 @@ fn assets_of(rel: &Value) -> Vec<Asset> {
                         .and_then(Value::as_str)
                         .and_then(|d| d.strip_prefix("sha256:"))
                         .map(|d| d.to_ascii_lowercase());
-                    Some(Asset { name, url, digest })
+                    let size = a.get("size").and_then(Value::as_u64);
+                    Some(Asset { name, url, digest, size })
                 })
                 .collect()
         })
@@ -944,7 +1371,82 @@ fn plan_for(rel: &Value, asset: &Asset, id: String) -> Result<Plan, String> {
         asset_name: asset.name.clone(),
         sha256,
         id,
+        installed_size: None,
+        download_size: asset.size,
     })
+}
+
+/// Reads only the ZIP directory (using HTTP range requests) to determine the
+/// exact installed size of selected executable files without downloading the
+/// complete release archive. Returns None when the host does not support byte
+/// ranges or the archive uses a layout we cannot inspect safely.
+fn zip_member_sizes(url: &str, archive_size: Option<u64>, wanted: &[String]) -> Option<u64> {
+    let total = archive_size?;
+    if total < 22 {
+        return None;
+    }
+    const MAX_TAIL: u64 = 65_557;
+    const MAX_DIRECTORY: u64 = 8 * 1024 * 1024;
+    let tail_start = total.saturating_sub(MAX_TAIL);
+    let tail = fetch_asset_range(url, tail_start, total - 1)?;
+    let eocd = tail
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")?;
+    if eocd + 22 > tail.len() {
+        return None;
+    }
+    let directory_size = u32::from_le_bytes(tail.get(eocd + 12..eocd + 16)?.try_into().ok()?) as u64;
+    let directory_offset = u32::from_le_bytes(tail.get(eocd + 16..eocd + 20)?.try_into().ok()?) as u64;
+    if directory_size == 0 || directory_size > MAX_DIRECTORY || directory_offset + directory_size > total {
+        return None;
+    }
+
+    let directory = if directory_offset >= tail_start
+        && directory_offset + directory_size <= total
+    {
+        let start = (directory_offset - tail_start) as usize;
+        tail.get(start..start + directory_size as usize)?.to_vec()
+    } else {
+        fetch_asset_range(url, directory_offset, directory_offset + directory_size - 1)?
+    };
+
+    let wanted: Vec<String> = wanted.iter().map(|name| name.to_ascii_lowercase()).collect();
+    let mut offset = 0usize;
+    let mut total_size = 0u64;
+    let mut found = 0usize;
+    while offset + 46 <= directory.len() {
+        if directory.get(offset..offset + 4)? != b"PK\x01\x02" {
+            break;
+        }
+        let uncompressed = u32::from_le_bytes(directory.get(offset + 24..offset + 28)?.try_into().ok()?) as u64;
+        let name_len = u16::from_le_bytes(directory.get(offset + 28..offset + 30)?.try_into().ok()?) as usize;
+        let extra_len = u16::from_le_bytes(directory.get(offset + 30..offset + 32)?.try_into().ok()?) as usize;
+        let comment_len = u16::from_le_bytes(directory.get(offset + 32..offset + 34)?.try_into().ok()?) as usize;
+        let end = offset.checked_add(46 + name_len + extra_len + comment_len)?;
+        let raw_name = directory.get(offset + 46..offset + 46 + name_len)?;
+        let name = String::from_utf8_lossy(raw_name).replace('\\', "/");
+        let base_name = name.rsplit('/').next().unwrap_or(&name).to_ascii_lowercase();
+        if wanted.iter().any(|candidate| candidate == &base_name) && uncompressed != u32::MAX as u64 {
+            total_size = total_size.checked_add(uncompressed)?;
+            found += 1;
+        }
+        offset = end;
+    }
+    (found == wanted.len()).then_some(total_size)
+}
+
+fn fetch_asset_range(url: &str, start: u64, end: u64) -> Option<Vec<u8>> {
+    let range = format!("bytes={start}-{end}");
+    let mut response = agent().get(url).header("Range", &range).call().ok()?;
+    let expected_prefix = format!("bytes {start}-");
+    let content_range = response.headers().get("Content-Range")?.to_str().ok()?;
+    if !content_range.starts_with(&expected_prefix) {
+        return None;
+    }
+    let length = usize::try_from(end.checked_sub(start)?.checked_add(1)?).ok()?;
+    let mut bytes = Vec::with_capacity(length);
+    response.body_mut().as_reader().take(length as u64).read_to_end(&mut bytes).ok()?;
+    (bytes.len() == length).then_some(bytes)
 }
 
 fn version_numbers(s: &str) -> Vec<u64> {

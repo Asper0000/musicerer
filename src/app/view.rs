@@ -5,7 +5,7 @@ use crate::theme as t;
 use crate::ui::{
     custom_progress_bar,
     icons::{
-        ICON_ALERT_TRIANGLE, ICON_DOT, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS,
+        ICON_ACTION_CANCEL, ICON_ALERT_TRIANGLE, ICON_DOT, ICON_NAV_DOWNLOADS, ICON_NAV_SETTINGS,
         ICON_SRC_SOUNDCLOUD, ICON_SRC_YOUTUBE,
     },
     queue::queue_group,
@@ -26,6 +26,21 @@ const ICON_SVG: &[u8] = include_bytes!("../../assets/icon.svg");
 const ICON_FOLDER: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>"#;
 const ICON_DISK: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2" ry="2"/><line x1="6" y1="8" x2="6.01" y2="8"/><line x1="10" y1="8" x2="10.01" y2="8"/><line x1="14" y1="8" x2="14.01" y2="8"/><line x1="18" y1="8" x2="18.01" y2="8"/></svg>"#;
 const ICON_PLUG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>"#;
+
+fn dialog_close_button(message: Message) -> Element<'static, Message> {
+    button(
+        svg(svg::Handle::from_memory(ICON_ACTION_CANCEL))
+            .width(Length::Fixed(16.0))
+            .height(Length::Fixed(16.0))
+            .style(|_, _| svg::Style { color: Some(t::text_primary()) }),
+    )
+    .on_press(message)
+    .style(t::secondary_button)
+    .padding(8)
+    .width(Length::Fixed(34.0))
+    .height(Length::Fixed(34.0))
+    .into()
+}
 
 fn resize_handle(window_id: window::Id, dir: Direction, width: Length, height: Length) -> Element<'static, Message> {
     let interaction = match dir {
@@ -92,6 +107,8 @@ impl App {
         let content_with_overlay: Element<'_, Message> =
             if self.show_uninstall_dialog {
                 stack![content_area, self.view_uninstall_dialog()].into()
+            } else if self.show_tool_info_dialog {
+                stack![content_area, self.view_tool_info_dialog()].into()
             } else if let Some(vpn) = &self.startup_vpn_warning {
                 stack![content_area, self.view_vpn_overlay(vpn)].into()
             } else if self.update_prompt {
@@ -337,7 +354,12 @@ impl App {
 
         let card = container(
             column![
-                text("Supported Platforms").size(18).width(Length::Fill).align_x(Alignment::Center),
+                row![
+                    text("Supported Platforms").size(18),
+                    Space::new().width(Length::Fill),
+                    dialog_close_button(Message::TogglePlatformsDialog),
+                ]
+                .align_y(Alignment::Center),
                 Space::new().height(12),
                 text("Musicerer currently supports downloading from these services:")
                     .size(13)
@@ -352,14 +374,7 @@ impl App {
                     .style(t::muted_text)
                     .width(Length::Fill)
                     .align_x(Alignment::Center),
-                Space::new().height(28),
-                container(
-                    button(text("Close").size(13))
-                        .on_press(Message::TogglePlatformsDialog)
-                        .style(t::primary_button)
-                        .padding([10, 24]),
-                )
-                .center_x(Length::Fill),
+                Space::new().height(16),
             ]
             .spacing(0),
         )
@@ -390,8 +405,13 @@ impl App {
 
         let card = container(
             column![
-                row![alert, text("VPN detected").size(18)]
-                    .spacing(12)
+                row![
+                    row![alert, text("VPN detected").size(18)]
+                        .spacing(12)
+                        .align_y(Alignment::Center),
+                    Space::new().width(Length::Fill),
+                    dialog_close_button(Message::DismissVpnWarning),
+                ]
                     .align_y(Alignment::Center),
                 Space::new().height(14),
                 text(format!(
@@ -977,7 +997,12 @@ impl App {
 
         let card = container(
             column![
-                text("Update available").size(18),
+                row![
+                    text("Update available").size(18),
+                    Space::new().width(Length::Fill),
+                    dialog_close_button(Message::DismissUpdatePrompt),
+                ]
+                .align_y(Alignment::Center),
                 Space::new().height(14),
                 text(format!(
                     "Musicerer {latest} is available. You are on v{}.",
@@ -986,6 +1011,7 @@ impl App {
                 .size(13),
                 Space::new().height(20),
                 row![
+                    Space::new().width(Length::Fill),
                     button(text("Later").size(13))
                         .on_press(Message::DismissUpdatePrompt)
                         .style(t::secondary_button)

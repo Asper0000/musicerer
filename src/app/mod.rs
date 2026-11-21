@@ -76,8 +76,8 @@ pub enum Message {
     SetKeepCache(bool),
     SetKeepLogs(bool),
     SetKeepOtherData(bool),
-    SetKeepOutputDirectory(bool),
     ConfirmUninstall,
+    ToggleToolInfoDialog,
     UpdatePromptView,
     DismissUpdatePrompt,
 
@@ -141,6 +141,7 @@ pub struct App {
     pub(crate) confirm_app_reinstall: bool,
     pub(crate) installation_info: updater::InstallationInfo,
     pub(crate) show_uninstall_dialog: bool,
+    pub(crate) show_tool_info_dialog: bool,
     pub(crate) uninstall_options: updater::UninstallOptions,
 }
 
@@ -198,6 +199,7 @@ impl App {
             confirm_app_reinstall: false,
             installation_info,
             show_uninstall_dialog: false,
+            show_tool_info_dialog: false,
             uninstall_options: updater::UninstallOptions::default(),
         };
 

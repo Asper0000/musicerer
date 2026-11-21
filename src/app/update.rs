@@ -133,6 +133,7 @@ impl App {
             Message::OpenOutputDir => self.open_output_dir(),
             Message::OpenInstallationDirectory(path) => open_with_system_file_manager(&path),
             Message::TogglePlatformsDialog => self.show_platforms = !self.show_platforms,
+            Message::ToggleToolInfoDialog => self.show_tool_info_dialog = !self.show_tool_info_dialog,
             Message::SwitchView(v) => {
                 if self.current_view == View::Settings && v != View::Settings {
                     self.save_config();
@@ -305,7 +306,6 @@ impl App {
             Message::SetKeepCache(value) => self.uninstall_options.keep_cache = value,
             Message::SetKeepLogs(value) => self.uninstall_options.keep_logs = value,
             Message::SetKeepOtherData(value) => self.uninstall_options.keep_other_data = value,
-            Message::SetKeepOutputDirectory(value) => self.uninstall_options.keep_output_directory = value,
             Message::ConfirmUninstall => {
                 if self.downloading || self.is_loading() || updater::is_busy(&self.updater) {
                     self.push_log(UiLogLevel::Warn, "Finish or stop active downloads and installation tasks before uninstalling.");

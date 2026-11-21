@@ -1,7 +1,7 @@
 ; Musicerer Windows installer
 ; Build with build.bat setup. The version is passed from Cargo.toml through /DMyAppVersion=...
 #ifndef MyAppVersion
-  #define MyAppVersion "0.3.1"
+  #define MyAppVersion "0.3.2"
 #endif
 #define MyAppName "Musicerer"
 #define MyAppPublisher "Asper"

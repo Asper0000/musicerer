@@ -26,3 +26,5 @@ pub const ICON_ACTION_UNINSTALL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/
 pub const ICON_ACTION_CONFIRM: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m20 6-11 11-5-5"/></svg>"#;
 
 pub const ICON_ACTION_INSTALL: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>"#;
+
+pub const ICON_HELP: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8.9 8.8a3.2 3.2 0 1 1 5.2 2.5c-1.3.95-2.1 1.55-2.1 3.2"/><path d="M12 18.2h.01"/></svg>"#;

@@ -27,10 +27,6 @@ pub struct UninstallOptions {
     pub keep_cache: bool,
     pub keep_logs: bool,
     pub keep_other_data: bool,
-    /// User-selected download directories may contain unrelated files. This is
-    /// unchecked by default like every other keep choice, so full removal also
-    /// removes the configured output directory after an explicit path warning.
-    pub keep_output_directory: bool,
 }
 
 struct UninstallCleanup {
@@ -68,16 +64,16 @@ impl InstallKind {
         }
     }
 
-    /// Endings of the release assets that match this kind of install.
-    pub(super) fn asset_suffixes(&self) -> &'static [&'static str] {
+    /// Ending of the release asset that matches this kind of install.
+    pub(super) fn asset_suffix(&self) -> &'static str {
         match self {
-            InstallKind::WinSetup => &["-windows-x64-setup.exe"],
-            // "-portable-slim.exe" is the name builds before 0.3.1 used.
-            InstallKind::WinPortable => &["-windows-x64-portable.exe", "-windows-x64-portable-slim.exe"],
-            InstallKind::AppImage => &[".AppImage"],
-            InstallKind::Deb => &[".deb"],
-            InstallKind::Rpm => &[".rpm"],
-            InstallKind::LinuxPortable | InstallKind::Unknown(_) => &[],
+            InstallKind::WinSetup => "-windows-x64-setup.exe",
+            InstallKind::WinPortable => "-windows-x64-portable.exe",
+            InstallKind::AppImage => ".AppImage",
+            InstallKind::LinuxPortable => "",
+            InstallKind::Deb => ".deb",
+            InstallKind::Rpm => ".rpm",
+            InstallKind::Unknown(_) => "",
         }
     }
 }
@@ -431,21 +427,113 @@ fn uninstall_cleanup_paths(options: &UninstallOptions, output_dir: &Path) -> Res
         cleanup.prune_dirs.push(root);
     }
 
-    if !options.keep_output_directory && fs::symlink_metadata(output_dir).is_ok() {
-        if !safe_to_remove_output_dir(output_dir) {
-            return Err(format!(
-                "For safety, Musicerer refused to delete the configured download directory because it may contain unrelated files or application data: {}",
-                output_dir.display()
-            ));
-        }
-        cleanup.remove_paths.push(output_dir.to_path_buf());
-    }
+    // Downloaded media is always preserved. This also protects it when the
+    // user has configured the output folder inside one of Musicerer's data
+    // directories which is otherwise selected for removal.
+    preserve_directory_in_cleanup(&mut cleanup.remove_paths, output_dir)?;
 
     cleanup.remove_paths.sort();
     cleanup.remove_paths.dedup();
     cleanup.prune_dirs.sort();
     cleanup.prune_dirs.dedup();
     Ok(cleanup)
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => { normalized.pop(); }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// Keep both the lexical path and its resolved path. The lexical form is
+/// important for preserving a configured output-directory symlink itself;
+/// the canonical form handles paths that reach the same directory through
+/// different aliases.
+fn path_variants(path: &Path) -> Vec<PathBuf> {
+    let mut variants = vec![normalized_path(path)];
+    if let Ok(canonical) = fs::canonicalize(path) {
+        if !variants.contains(&canonical) {
+            variants.push(canonical);
+        }
+    }
+    variants
+}
+
+fn path_is_within(path: &[PathBuf], parent: &[PathBuf]) -> bool {
+    path.iter().any(|candidate| {
+        parent.iter().any(|root| candidate.starts_with(root))
+    })
+}
+
+fn paths_are_same(a: &[PathBuf], b: &[PathBuf]) -> bool {
+    a.iter().any(|left| b.iter().any(|right| left == right))
+}
+
+fn preserve_directory_in_cleanup(paths: &mut Vec<PathBuf>, preserve: &Path) -> Result<(), String> {
+    let preserve_variants = path_variants(preserve);
+    let mut filtered = Vec::new();
+    for path in paths.drain(..) {
+        let candidate_variants = path_variants(&path);
+        if path_is_within(&candidate_variants, &preserve_variants) {
+            // This removal target is the preserved media directory or below it.
+            continue;
+        }
+        if path_is_within(&preserve_variants, &candidate_variants)
+            && !paths_are_same(&preserve_variants, &candidate_variants)
+        {
+            add_removals_except(&path, preserve, &mut filtered)?;
+        } else {
+            filtered.push(path);
+        }
+    }
+    *paths = filtered;
+    Ok(())
+}
+
+fn add_removals_except(
+    original: &Path,
+    preserve: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let metadata = match fs::symlink_metadata(original) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not inspect {} before uninstalling: {error}", original.display())),
+    };
+    // Do not follow symlinks while splitting a parent removal. Keeping the
+    // symlink is safer than risking deletion outside Musicerer's data tree.
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(());
+    }
+    let preserve_variants = path_variants(preserve);
+    let entries = fs::read_dir(original)
+        .map_err(|error| format!("Could not inspect {} before uninstalling: {error}", original.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Could not inspect an item in {}: {error}", original.display()))?;
+        let child = entry.path();
+        let child_variants = path_variants(&child);
+        if path_is_within(&preserve_variants, &child_variants)
+            && !paths_are_same(&preserve_variants, &child_variants)
+        {
+            add_removals_except(&child, preserve, out)?;
+        } else if path_is_within(&child_variants, &preserve_variants) {
+            // Preserve the output directory and everything below it.
+        } else {
+            out.push(child);
+        }
+    }
+    Ok(())
 }
 
 fn add_unclassified_children(root: &Path, preserve: &[&str], out: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -484,43 +572,6 @@ fn same_path(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
-}
-
-fn safe_to_remove_output_dir(path: &Path) -> bool {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
-        Err(_) => return false,
-    };
-    if metadata.file_type().is_symlink() { return false; }
-    let Ok(canonical) = fs::canonicalize(path) else { return false; };
-    if canonical.parent().is_none() { return false; }
-    if let Some(home) = dirs::home_dir() {
-        let home = fs::canonicalize(&home).unwrap_or(home);
-        // Never allow deleting the home directory or one of its parents.
-        if canonical == home || home.starts_with(&canonical) { return false; }
-    }
-    if std::env::current_exe().ok().is_some_and(|exe| canonical == exe || exe.starts_with(&canonical)) { return false; }
-    #[cfg(target_os = "linux")]
-    for protected in ["/tmp", "/var", "/usr", "/etc", "/opt", "/bin", "/sbin", "/lib", "/lib64", "/dev", "/proc", "/sys", "/run", "/mnt", "/media"] {
-        let protected = Path::new(protected);
-        if canonical == protected || protected.starts_with(&canonical) || canonical.starts_with(protected) { return false; }
-    }
-    #[cfg(windows)]
-    for variable in ["WINDIR", "SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
-        if let Some(value) = std::env::var_os(variable) {
-            let protected = PathBuf::from(value);
-            if let Ok(protected) = fs::canonicalize(protected) {
-                if canonical == protected || canonical.starts_with(&protected) || protected.starts_with(&canonical) {
-                    return false;
-                }
-            }
-        }
-    }
-    for base in [dirs::config_dir(), dirs::data_dir(), dirs::data_local_dir(), dirs::cache_dir()].into_iter().flatten() {
-        if canonical == base || canonical.starts_with(&base) || base.starts_with(&canonical) { return false; }
-    }
-    true
 }
 
 #[cfg(windows)]
